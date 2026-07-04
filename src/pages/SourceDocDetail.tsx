@@ -38,6 +38,10 @@ export default function SourceDocDetail() {
   }
 
   const rename = async () => {
+    if (!newName.trim()) {
+      message.warning('名称不能为空')
+      return
+    }
     await api.patch(`/api/source-docs/${id}`, { name: newName })
     message.success('已重命名')
     setRenaming(false)
@@ -56,7 +60,17 @@ export default function SourceDocDetail() {
           ) : (
             <>
               {doc.name}
-              {active && <a style={{ fontSize: 13 }} onClick={() => setRenaming(true)}>重命名</a>}
+              {active && (
+                <a
+                  style={{ fontSize: 13 }}
+                  onClick={() => {
+                    setNewName(doc.name)
+                    setRenaming(true)
+                  }}
+                >
+                  重命名
+                </a>
+              )}
             </>
           )}
           <Tag color={TYPE_COLOR[doc.type]}>{doc.type}</Tag>

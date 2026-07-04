@@ -234,8 +234,8 @@ export default function KnowledgeList() {
             width: 160,
             ellipsis: true,
             render: (_, r) =>
-              r.source_doc?.name ? (
-                <a onClick={() => navigate(`/source-docs/${r.source_doc!.id}`)}>{r.source_doc.name}</a>
+              r.source_doc.name ? (
+                <a onClick={() => navigate(`/source-docs/${r.source_doc.id}`)}>{r.source_doc.name}</a>
               ) : (
                 '—'
               ),
