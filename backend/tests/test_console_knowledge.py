@@ -31,6 +31,7 @@ def create_body(**overrides) -> dict:
         "owner": "ou_member",
         "effective_date": "2026-07-01",
         "save_mode": "submit",
+        "new_doc_name": "默认测试文件",
     }
     body.update(overrides)
     return body
@@ -317,3 +318,47 @@ class TestTemplates:
     async def test_unknown_type_404(self, app_client, seeded):
         resp = await app_client.get("/api/templates/wiki.md", cookies=await cookies_for("ou_out"))
         assert resp.status_code == 404
+
+
+class TestSourceDocAttachment:
+    async def test_create_with_new_doc(self, app_client, seeded):
+        body = create_body(new_doc_name="客服FAQ")
+        resp = await app_client.post(
+            "/api/knowledge", json=body, cookies=await cookies_for("ou_member")
+        )
+        assert resp.status_code == 200
+        kid = resp.json()["kid"]
+        detail = await app_client.get(f"/api/knowledge/{kid}", cookies=await cookies_for("ou_member"))
+        assert detail.json()["source_doc"]["name"] == "客服FAQ"
+
+    async def test_create_with_existing_doc(self, app_client, seeded, db_session):
+        from app.storage.pg.models import SourceDoc
+
+        doc = SourceDoc(name="已有文件", domain_code="free-order", type="faq",
+                        source="manual", created_by="ou_member")
+        db_session.add(doc)
+        await db_session.commit()
+        body = create_body(source_doc_id=doc.id)
+        resp = await app_client.post(
+            "/api/knowledge", json=body, cookies=await cookies_for("ou_member")
+        )
+        assert resp.json()["kid"] is not None
+
+    async def test_create_without_doc_rejected(self, app_client, seeded):
+        resp = await app_client.post(
+            "/api/knowledge", json=create_body(new_doc_name=None), cookies=await cookies_for("ou_member")
+        )
+        assert resp.status_code == 400  # 必须归属文件（spec §4.1）
+
+    async def test_doc_type_mismatch_rejected(self, app_client, seeded, db_session):
+        from app.storage.pg.models import SourceDoc
+
+        doc = SourceDoc(name="SOP文件", domain_code="free-order", type="sop",
+                        source="manual", created_by="ou_member")
+        db_session.add(doc)
+        await db_session.commit()
+        resp = await app_client.post(
+            "/api/knowledge", json=create_body(source_doc_id=doc.id),
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 400

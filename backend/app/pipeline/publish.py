@@ -35,6 +35,8 @@ class PublishInput:
     effective_date: date
     expire_date: date | None
     actor_user_id: str
+    source_doc_id: int | None = None  # 新建行必填；更新已有 kid 时忽略
+    doc_seq: int | None = None
 
 
 @dataclass
@@ -138,6 +140,8 @@ async def save_draft(session: AsyncSession, inp: PublishInput) -> str:
             source_type=inp.source_type,
             source_ref=inp.source_ref,
             source_url=inp.source_url,
+            source_doc_id=inp.source_doc_id,
+            doc_seq=inp.doc_seq,
             owner_user_id=inp.owner_user_id,
             status=status,
             effective_date=inp.effective_date,
@@ -193,6 +197,8 @@ async def publish(
                 source_type=inp.source_type,
                 source_ref=inp.source_ref,
                 source_url=inp.source_url,
+                source_doc_id=inp.source_doc_id,
+                doc_seq=inp.doc_seq,
                 owner_user_id=inp.owner_user_id,
                 version=version,
                 status=status,

@@ -5,9 +5,9 @@
 「手工录入-<type>」文件（source='manual'，doc_seq 按 created_at 排序；
 名字带 type 避免撞 (domain_code, name) 唯一约束）。
 
-注意：knowledge.source_doc_id / doc_seq 暂保持可空——发布链路（PublishInput）
-要到 Task 3 才带文件归属，届时在本迁移就地补回 NOT NULL 收紧（kg_test 每次
-重建、dev 库尚未迁移，就地改 0002 安全）。
+存量回填完毕后，knowledge.source_doc_id / doc_seq 收紧为 NOT NULL——
+发布链路（PublishInput，Task 3）已带文件归属，回填保证了收紧前无遗漏行
+（kg_test 每次重建、dev 库尚未迁移，就地改 0002 安全）。
 """
 
 import sqlalchemy as sa
@@ -98,6 +98,10 @@ def upgrade() -> None:
         FROM seqed WHERE k.kid = seqed.kid
         """
     )
+
+    # 存量回填完毕，收紧非空约束（Task 3：发布链路已带文件归属）
+    op.alter_column("knowledge", "source_doc_id", nullable=False)
+    op.alter_column("knowledge", "doc_seq", nullable=False)
 
 
 def downgrade() -> None:

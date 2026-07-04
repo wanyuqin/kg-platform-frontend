@@ -72,7 +72,11 @@ class TestKnowledgeStats:
         await app_client.post("/api/knowledge", json=create_body(), cookies=cookies)
         await app_client.post(
             "/api/knowledge",
-            json=create_body(title="免单资格？", fields={**FIELDS_OK, "标准问法": "免单资格？"}),
+            json=create_body(
+                title="免单资格？",
+                fields={**FIELDS_OK, "标准问法": "免单资格？"},
+                new_doc_name="免单资格文件",
+            ),
             cookies=cookies,
         )
         resp = await app_client.get(

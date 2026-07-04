@@ -30,6 +30,8 @@ def test_search_validation_maps_to_400_envelope():
 # 参数合法 + 未知 key → 401 的用例在 test_gateway.py（需要 DB，走依赖覆盖的 async client）
 
 
-def test_request_id_header_present():
+def test_request_id_header_present(migrated_db):
+    # 该请求带合法参数，会真正走到 DB 鉴权；依赖 migrated_db 保证 kg_test 已建库迁移，
+    # 否则本用例先于其它 DB 用例执行时会报 InvalidCatalogNameError
     resp = client.post("/v1/search", json={"query": "发票"}, headers=AUTH)
     assert resp.headers.get("X-Request-Id", "").startswith("req_")

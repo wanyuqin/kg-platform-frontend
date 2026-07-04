@@ -45,9 +45,11 @@ def _reset_retry_state():
     jobs._retry_state.clear()
 
 
-async def seed_published(db_session, index_state: str) -> str:
+async def seed_published(db_session, index_state: str, seed_doc) -> str:
     rv = RecordingViking()
-    result = await publish(db_session, rv.client, make_input())
+    result = await publish(
+        db_session, rv.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+    )
     row = (
         await db_session.execute(select(Knowledge).where(Knowledge.kid == result.kid))
     ).scalar_one()
@@ -57,8 +59,8 @@ async def seed_published(db_session, index_state: str) -> str:
 
 
 class TestRetryFailedIndex:
-    async def test_retry_success_sets_indexing(self, db_session, domain):
-        kid = await seed_published(db_session, "failed")
+    async def test_retry_success_sets_indexing(self, db_session, domain, seed_doc):
+        kid = await seed_published(db_session, "failed", seed_doc)
         viking = ProbeViking()
         retried = await jobs.retry_failed_index(db_session, viking)
         assert retried == 1
@@ -66,8 +68,8 @@ class TestRetryFailedIndex:
         row = await db_session.get(Knowledge, kid)
         assert row.index_state == "indexing"  # ready 由就绪轮询置位
 
-    async def test_retry_failure_backs_off(self, db_session, domain):
-        kid = await seed_published(db_session, "failed")
+    async def test_retry_failure_backs_off(self, db_session, domain, seed_doc):
+        kid = await seed_published(db_session, "failed", seed_doc)
         viking = ProbeViking()
         viking.write_fail = True
         await jobs.retry_failed_index(db_session, viking)
@@ -80,8 +82,8 @@ class TestRetryFailedIndex:
         await jobs.retry_failed_index(db_session, viking)
         assert jobs._retry_state[kid][0] == 1
 
-    async def test_gives_up_after_max_retries(self, db_session, domain, caplog):
-        kid = await seed_published(db_session, "failed")
+    async def test_gives_up_after_max_retries(self, db_session, domain, seed_doc, caplog):
+        kid = await seed_published(db_session, "failed", seed_doc)
         viking = ProbeViking()
         viking.write_fail = True
         jobs._retry_state[kid] = (jobs.MAX_RETRIES, datetime.now(UTC) - timedelta(seconds=1))
@@ -92,16 +94,16 @@ class TestRetryFailedIndex:
 
 
 class TestPollIndexingReady:
-    async def test_ready_when_probe_hits(self, db_session, domain):
-        kid = await seed_published(db_session, "indexing")
+    async def test_ready_when_probe_hits(self, db_session, domain, seed_doc):
+        kid = await seed_published(db_session, "indexing", seed_doc)
         viking = ProbeViking()
         viking.indexed_uris.add(f"viking://resources/free-order/faq/{kid}.md")
         assert await jobs.poll_indexing_ready(db_session, viking) == 1
         row = await db_session.get(Knowledge, kid)
         assert row.index_state == "ready"
 
-    async def test_stays_indexing_when_not_ready(self, db_session, domain):
-        kid = await seed_published(db_session, "indexing")
+    async def test_stays_indexing_when_not_ready(self, db_session, domain, seed_doc):
+        kid = await seed_published(db_session, "indexing", seed_doc)
         assert await jobs.poll_indexing_ready(db_session, ProbeViking()) == 0
         row = await db_session.get(Knowledge, kid)
         assert row.index_state == "indexing"
@@ -140,13 +142,18 @@ class TestAuditPartitions:
 
 
 class TestCleanupStaleDrafts:
-    async def test_deletes_drafts_older_than_30_days(self, db_session, domain):
+    async def test_deletes_drafts_older_than_30_days(self, db_session, domain, seed_doc):
         from app.pipeline.publish import save_draft
 
-        kid_old = await save_draft(db_session, make_input())
+        kid_old = await save_draft(db_session, make_input(source_doc_id=seed_doc.id, doc_seq=1))
         kid_new = await save_draft(
             db_session,
-            make_input(sections={**FAQ_SECTIONS, "标准问法": "另一条？"}, title="另一条？"),
+            make_input(
+                sections={**FAQ_SECTIONS, "标准问法": "另一条？"},
+                title="另一条？",
+                source_doc_id=seed_doc.id,
+                doc_seq=2,
+            ),
         )
         await db_session.execute(
             text("UPDATE knowledge SET updated_at = now() - interval '31 days' WHERE kid = :k"),
@@ -159,8 +166,8 @@ class TestCleanupStaleDrafts:
         assert await db_session.get(Knowledge, kid_old) is None
         assert (await db_session.get(Knowledge, kid_new)).status == "draft"
 
-    async def test_does_not_touch_published(self, db_session, domain):
-        kid = await seed_published(db_session, "ready")
+    async def test_does_not_touch_published(self, db_session, domain, seed_doc):
+        kid = await seed_published(db_session, "ready", seed_doc)
         await db_session.execute(
             text("UPDATE knowledge SET updated_at = now() - interval '99 days' WHERE kid = :k"),
             {"k": kid},

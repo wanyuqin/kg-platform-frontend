@@ -77,9 +77,8 @@ class Knowledge(Base):
     source_type: Mapped[str] = mapped_column(String(16))
     source_ref: Mapped[str] = mapped_column(String(512))
     source_url: Mapped[str | None] = mapped_column(String(1024))
-    # 暂时可空：发布链路 Task 3 带上文件归属后收紧为 NOT NULL
-    source_doc_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("source_doc.id"))
-    doc_seq: Mapped[int | None] = mapped_column(Integer)
+    source_doc_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("source_doc.id"))
+    doc_seq: Mapped[int] = mapped_column(Integer)
     owner_user_id: Mapped[str] = mapped_column(String(64))
     version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
     status: Mapped[str] = mapped_column(String(16))

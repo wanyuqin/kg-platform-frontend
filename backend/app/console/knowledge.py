@@ -11,6 +11,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import errors
@@ -30,6 +31,7 @@ from app.storage.pg.models import (
     ImportItem,
     Knowledge,
     KnowledgeVersion,
+    SourceDoc,
 )
 from app.storage.pg.session import get_session
 from app.storage.viking.client import VikingClient, build_uri, get_viking
@@ -62,7 +64,53 @@ async def _can_edit(session: AsyncSession, user: ConsoleUser, row: Knowledge) ->
     await auth.require_domain_role(session, user, row.domain_code, {"admin"})
 
 
-def _knowledge_out(row: Knowledge) -> dict:
+async def resolve_source_doc(
+    session: AsyncSession,
+    user: ConsoleUser,
+    domain: str,
+    type_: str,
+    source_doc_id: int | None,
+    new_doc_name: str | None,
+) -> SourceDoc:
+    """表单/导入共用：取已有文件或新建 manual 文件；校验 domain/type/active。"""
+    if source_doc_id is not None:
+        doc = await session.get(SourceDoc, source_doc_id)
+        if doc is None or doc.domain_code != domain:
+            raise errors.not_found()
+        if doc.type != type_ or doc.status != "active":
+            raise errors.invalid_argument("知识文件类型不匹配或已归档")
+        return doc
+    if not (new_doc_name and new_doc_name.strip()):
+        raise errors.invalid_argument("必须指定所属知识文件（source_doc_id 或 new_doc_name）")
+    name = new_doc_name.strip()
+    dup = await session.execute(
+        select(SourceDoc.id).where(SourceDoc.domain_code == domain, SourceDoc.name == name)
+    )
+    if dup.scalar_one_or_none() is not None:
+        raise errors.conflict(f"知识文件「{name}」已存在")
+    doc = SourceDoc(name=name, domain_code=domain, type=type_, source="manual",
+                    created_by=user.user_id)
+    session.add(doc)
+    try:
+        await session.flush()  # 拿 id，不提交（与条目同事务）
+    except IntegrityError:
+        # 并发兜底：SELECT-then-INSERT 竞态下靠 (domain_code, name) 唯一约束收口，
+        # 对外仍是 409 冲突契约（与 spec §6「唯一约束兜底并发」既定模式一致）
+        await session.rollback()
+        raise errors.conflict(f"知识文件「{name}」已存在")
+    return doc
+
+
+async def next_doc_seq(session: AsyncSession, doc_id: int) -> int:
+    cur = await session.execute(
+        select(func.coalesce(func.max(Knowledge.doc_seq), 0)).where(
+            Knowledge.source_doc_id == doc_id
+        )
+    )
+    return cur.scalar_one() + 1
+
+
+def _knowledge_out(row: Knowledge, doc_name: str | None = None) -> dict:
     return {
         "kid": row.kid,
         "title": row.title,
@@ -76,6 +124,7 @@ def _knowledge_out(row: Knowledge) -> dict:
         "source_type": row.source_type,
         "source_ref": row.source_ref,  # 线稿①溯源卡
         "source_url": row.source_url,
+        "source_doc": {"id": row.source_doc_id, "name": doc_name},
         "effective_date": row.effective_date.isoformat(),
         "expire_date": row.expire_date.isoformat(),
         "updated_at": row.updated_at.isoformat(),
@@ -95,9 +144,11 @@ class KnowledgeCreate(BaseModel):
     effective_date: date
     expire_date: date | None = None
     save_mode: str = Field(default="submit", pattern="^(draft|submit)$")
+    source_doc_id: int | None = None
+    new_doc_name: str | None = None
 
 
-def _to_input(body: KnowledgeCreate, user: ConsoleUser) -> PublishInput:
+def _to_input(body: KnowledgeCreate, user: ConsoleUser, doc: SourceDoc, doc_seq: int) -> PublishInput:
     return PublishInput(
         domain_code=body.domain,
         type_=body.type,
@@ -111,6 +162,8 @@ def _to_input(body: KnowledgeCreate, user: ConsoleUser) -> PublishInput:
         effective_date=body.effective_date,
         expire_date=body.expire_date,
         actor_user_id=user.user_id,
+        source_doc_id=doc.id,
+        doc_seq=doc_seq,
     )
 
 
@@ -129,7 +182,10 @@ async def create_knowledge(
     if body.save_mode == "submit" and not ok:
         return {"kid": None, "status": "rejected", "validation": validation}
 
-    inp = _to_input(body, user)
+    doc = await resolve_source_doc(
+        session, user, body.domain, body.type, body.source_doc_id, body.new_doc_name
+    )
+    inp = _to_input(body, user, doc, await next_doc_seq(session, doc.id))
     try:
         if body.save_mode == "draft":
             kid = await save_draft(session, inp)
@@ -189,8 +245,19 @@ async def list_knowledge(
         .all()
     )
     hits = await hits_last_30d(session, [r.kid for r in rows])
+    doc_ids = {r.source_doc_id for r in rows if r.source_doc_id is not None}
+    doc_names = dict(
+        (
+            await session.execute(
+                select(SourceDoc.id, SourceDoc.name).where(SourceDoc.id.in_(doc_ids))
+            )
+        ).all()
+    )
     return {
-        "items": [{**_knowledge_out(r), "hits_30d": hits.get(r.kid, 0)} for r in rows],
+        "items": [
+            {**_knowledge_out(r, doc_names.get(r.source_doc_id)), "hits_30d": hits.get(r.kid, 0)}
+            for r in rows
+        ],
         "page": page,
         "page_size": page_size,
     }
@@ -266,8 +333,9 @@ async def knowledge_detail(
     )
     current = next((s for s in snaps if s.version == row.version), snaps[0] if snaps else None)
     hits = await hits_last_30d(session, [kid])
+    doc = await session.get(SourceDoc, row.source_doc_id) if row.source_doc_id else None
     return {
-        **_knowledge_out(row),
+        **_knowledge_out(row, doc.name if doc else None),
         "hits_30d": hits.get(kid, 0),  # 线稿①底部治理信息条
         "content": current.content if current else "",
         "fields": (current.meta or {}).get("fields", {}) if current else {},
@@ -297,8 +365,9 @@ async def update_knowledge(
     validation, ok = run_pipeline(body.type, body.fields)
     if not ok:
         return {"kid": kid, "status": "rejected", "validation": validation}
+    doc = await session.get(SourceDoc, row.source_doc_id)
     try:
-        result = await publish(session, viking, _to_input(body, user), kid=kid)
+        result = await publish(session, viking, _to_input(body, user, doc, row.doc_seq), kid=kid)
     except DuplicateContent as exc:
         raise errors.conflict(f"内容与已有知识 {exc.existing_kid} 重复")
     return {
@@ -487,6 +556,22 @@ async def confirm_import(
 ):
     batch, items = await _load_batch(session, user, batch_id)
     by_id = {i.id: i for i in items}
+    # 过渡实现（Task 5 会改为正式的 batch.source_doc_id 回填逻辑）：
+    # confirm 时按 (domain, file_name) 找或建一份 upload 文件承接本批次条目的归属。
+    doc = (
+        await session.execute(
+            select(SourceDoc).where(
+                SourceDoc.domain_code == batch.domain_code, SourceDoc.name == batch.file_name
+            )
+        )
+    ).scalar_one_or_none()
+    if doc is None:
+        doc = SourceDoc(
+            name=batch.file_name, domain_code=batch.domain_code, type=batch.type,
+            source="upload", created_by=user.user_id,
+        )
+        session.add(doc)
+        await session.flush()
     results = []
     for item_id in body.item_ids:
         item = by_id.get(item_id)
@@ -512,6 +597,8 @@ async def confirm_import(
             effective_date=date.today(),
             expire_date=None,
             actor_user_id=user.user_id,
+            source_doc_id=doc.id,
+            doc_seq=item.seq,
         )
         try:
             result = await publish(session, viking, inp)

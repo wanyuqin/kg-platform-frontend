@@ -51,9 +51,11 @@ async def get_knowledge(db_session, kid: str) -> Knowledge:
 
 
 class TestFirstPublish:
-    async def test_creates_kid_row_and_snapshot(self, db_session, domain):
+    async def test_creates_kid_row_and_snapshot(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        result = await publish(db_session, viking.client, make_input())
+        result = await publish(
+            db_session, viking.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+        )
 
         assert result.kid == "faq-fo-0001"
         row = await get_knowledge(db_session, result.kid)
@@ -71,22 +73,28 @@ class TestFirstPublish:
         assert "## 标准答案" in snap.content
         assert snap.meta["domain"] == "free-order"
 
-    async def test_seq_increments_per_domain_type(self, db_session, domain):
+    async def test_seq_increments_per_domain_type(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        r1 = await publish(db_session, viking.client, make_input())
+        r1 = await publish(
+            db_session, viking.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+        )
         r2 = await publish(
             db_session,
             viking.client,
             make_input(
                 title="免单资格如何判断？",
                 sections={**FAQ_SECTIONS, "标准问法": "免单资格如何判断？"},
+                source_doc_id=seed_doc.id,
+                doc_seq=2,
             ),
         )
         assert (r1.kid, r2.kid) == ("faq-fo-0001", "faq-fo-0002")
 
-    async def test_writes_viking_with_frontmatter(self, db_session, domain):
+    async def test_writes_viking_with_frontmatter(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        result = await publish(db_session, viking.client, make_input())
+        result = await publish(
+            db_session, viking.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+        )
 
         assert len(viking.writes) == 1
         w = viking.writes[0]
@@ -95,19 +103,29 @@ class TestFirstPublish:
         assert f"kid: {result.kid}" in w["content"]
         assert "## 标准问法" in w["content"]
 
-    async def test_expire_date_defaults_from_domain_ttl(self, db_session, domain):
+    async def test_expire_date_defaults_from_domain_ttl(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        result = await publish(db_session, viking.client, make_input(expire_date=None))
+        result = await publish(
+            db_session,
+            viking.client,
+            make_input(expire_date=None, source_doc_id=seed_doc.id, doc_seq=1),
+        )
         row = await get_knowledge(db_session, result.kid)
         assert row.expire_date == row.effective_date + timedelta(days=365)  # domain 默认 TTL
 
 
 class TestDedup:
-    async def test_duplicate_content_raises_with_existing_kid(self, db_session, domain):
+    async def test_duplicate_content_raises_with_existing_kid(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        first = await publish(db_session, viking.client, make_input())
+        first = await publish(
+            db_session, viking.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+        )
         with pytest.raises(DuplicateContent) as exc_info:
-            await publish(db_session, viking.client, make_input(title="换个标题但正文相同"))
+            await publish(
+                db_session,
+                viking.client,
+                make_input(title="换个标题但正文相同", source_doc_id=seed_doc.id, doc_seq=2),
+            )
         assert exc_info.value.existing_kid == first.kid
         # 事务已回滚：库里仍只有一条
         count = (await db_session.execute(select(func.count()).select_from(Knowledge))).scalar_one()
@@ -115,9 +133,11 @@ class TestDedup:
 
 
 class TestRepublish:
-    async def test_update_increments_version_same_kid_same_uri(self, db_session, domain):
+    async def test_update_increments_version_same_kid_same_uri(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        first = await publish(db_session, viking.client, make_input())
+        first = await publish(
+            db_session, viking.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+        )
         updated = await publish(
             db_session,
             viking.client,
@@ -142,9 +162,11 @@ class TestRepublish:
 
 
 class TestVikingFailure:
-    async def test_failure_sets_index_state_failed_keeps_published(self, db_session, domain):
+    async def test_failure_sets_index_state_failed_keeps_published(self, db_session, domain, seed_doc):
         viking = RecordingViking(fail=True)
-        result = await publish(db_session, viking.client, make_input())
+        result = await publish(
+            db_session, viking.client, make_input(source_doc_id=seed_doc.id, doc_seq=1)
+        )
         row = await get_knowledge(db_session, result.kid)
         # 8.4：写入失败不回退 published，index_state=failed 由 scheduler 重试收敛
         assert row.status == "published"
@@ -152,8 +174,8 @@ class TestVikingFailure:
 
 
 class TestDraftFlow:
-    async def test_save_draft_assigns_kid_with_draft_slot_only(self, db_session, domain):
-        kid = await save_draft(db_session, make_input())
+    async def test_save_draft_assigns_kid_with_draft_slot_only(self, db_session, domain, seed_doc):
+        kid = await save_draft(db_session, make_input(source_doc_id=seed_doc.id, doc_seq=1))
         row = await get_knowledge(db_session, kid)
         assert row.status == "draft"
         assert row.index_state == "none"
@@ -166,10 +188,15 @@ class TestDraftFlow:
         assert [s.version for s in snaps] == [0]
         assert snaps[0].meta["fields"]["标准问法"]  # 表单回填数据
 
-    async def test_publish_draft_transitions_to_published(self, db_session, domain):
+    async def test_publish_draft_transitions_to_published(self, db_session, domain, seed_doc):
         viking = RecordingViking()
-        kid = await save_draft(db_session, make_input())
-        result = await publish(db_session, viking.client, make_input(), kid=kid)
+        kid = await save_draft(db_session, make_input(source_doc_id=seed_doc.id, doc_seq=1))
+        result = await publish(
+            db_session,
+            viking.client,
+            make_input(source_doc_id=seed_doc.id, doc_seq=1),
+            kid=kid,
+        )
         assert result.kid == kid
         row = await get_knowledge(db_session, kid)
         assert row.status == "published"

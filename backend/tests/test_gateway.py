@@ -14,7 +14,7 @@ from app.audit import writer
 from app.gateway.auth import hash_key, new_key_material
 from app.main import create_app
 from app.pipeline.publish import PublishInput, publish
-from app.storage.pg.models import ApiKey, Domain, Knowledge
+from app.storage.pg.models import ApiKey, Domain, Knowledge, SourceDoc
 from app.storage.pg.session import get_session
 from app.storage.viking.client import VikingError, get_viking
 from tests.conftest import RecordingViking
@@ -84,10 +84,24 @@ async def seeded(db_session):
     db_session.add(Domain(code="free-order", short_code="fo", name="免单域", created_by="t"))
     db_session.add(Domain(code="other", short_code="ot", name="他域", created_by="t"))
     await db_session.commit()
+    doc_fo = SourceDoc(name="免单FAQ文件", domain_code="free-order", type="faq",
+                       source="manual", created_by="t")
+    doc_other = SourceDoc(name="他域政策文件", domain_code="other", type="policy",
+                          source="manual", created_by="t")
+    db_session.add_all([doc_fo, doc_other])
+    await db_session.flush()
 
     rv = RecordingViking()
-    ok = await publish(db_session, rv.client, make_input("企业版发票如何申请？", "后台申请。"))
-    expired = await publish(db_session, rv.client, make_input("旧活动规则？", "已结束。"))
+    ok = await publish(
+        db_session,
+        rv.client,
+        make_input("企业版发票如何申请？", "后台申请。", source_doc_id=doc_fo.id, doc_seq=1),
+    )
+    expired = await publish(
+        db_session,
+        rv.client,
+        make_input("旧活动规则？", "已结束。", source_doc_id=doc_fo.id, doc_seq=2),
+    )
     row = (
         await db_session.execute(select(Knowledge).where(Knowledge.kid == expired.kid))
     ).scalar_one()
@@ -95,7 +109,10 @@ async def seeded(db_session):
     foreign = await publish(
         db_session,
         rv.client,
-        make_input("他域政策", "他域内容。", type_="policy", domain_code="other"),
+        make_input(
+            "他域政策", "他域内容。", type_="policy", domain_code="other",
+            source_doc_id=doc_other.id, doc_seq=1,
+        ),
     )
     await db_session.commit()
     return {"ok": ok.kid, "expired": expired.kid, "foreign": foreign.kid}

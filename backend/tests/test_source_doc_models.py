@@ -1,13 +1,15 @@
 """source_doc 表与三表新列的约束行为（spec §3）。
 
-knowledge.source_doc_id / doc_seq 的非空约束测试推迟到 Task 3
-（发布链路带文件归属后连同约束收紧一起补回）。
+knowledge.source_doc_id / doc_seq 的非空约束已随 Task 3（发布链路带文件
+归属）收紧，见 TestKnowledgeDocColumns。
 """
+
+from datetime import date
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.storage.pg.models import Domain, SourceDoc
+from app.storage.pg.models import Domain, Knowledge, SourceDoc
 
 
 @pytest.fixture
@@ -42,5 +44,21 @@ class TestSourceDoc:
 
     async def test_source_check_constraint(self, db_session, domain):
         db_session.add(make_doc(source="paste"))  # 非法枚举
+        with pytest.raises(IntegrityError):
+            await db_session.commit()
+
+
+class TestKnowledgeDocColumns:
+    async def test_knowledge_requires_source_doc(self, db_session, domain):
+        """knowledge.source_doc_id/doc_seq 非空约束生效。"""
+        db_session.add(
+            Knowledge(
+                kid="faq-fo-9001", title="t", domain_code="free-order", type="faq",
+                source_type="manual", source_ref="form:x", owner_user_id="ou_dev",
+                status="published", effective_date=date(2026, 7, 1),
+                expire_date=date(2027, 7, 1), content_hash="0" * 64,
+                # 故意不给 source_doc_id / doc_seq
+            )
+        )
         with pytest.raises(IntegrityError):
             await db_session.commit()
