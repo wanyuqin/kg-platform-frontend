@@ -111,6 +111,60 @@ export const TYPE_COLOR: Record<string, string> = {
 
 // ---- 接口返回类型（与后端响应字段一一对应） ----
 
+export interface SourceDocItem {
+  id: number
+  name: string
+  domain: string
+  type: string
+  source: 'manual' | 'upload' | 'feishu'
+  status: 'active' | 'archived'
+  entry_total: number
+  entry_published: number
+  updated_at: string
+}
+
+export interface SourceDocEntry {
+  kid: string
+  title: string
+  status: string
+  version: number
+  expire_date: string
+  doc_seq: number
+}
+
+export interface SourceDocBatch {
+  id: number
+  origin: string
+  created_by: string
+  created_at: string
+  stats: Record<string, number>
+}
+
+export interface SourceDocDetailOut extends SourceDocItem {
+  entries: SourceDocEntry[]
+  batches: SourceDocBatch[]
+}
+
+export const SOURCE_LABEL: Record<string, string> = {
+  manual: '自建',
+  upload: '上传',
+  feishu: '飞书',
+}
+
+export const ALIGN_LABEL: Record<string, string> = {
+  new: '新增',
+  changed: '变更',
+  unchanged: '未变',
+  disappeared: '消失',
+}
+
+export const ALIGN_COLOR: Record<string, string> = {
+  new: 'green',
+  changed: 'blue',
+  unchanged: 'default',
+  disappeared: 'red',
+}
+
 export interface KnowledgeItem {
   kid: string
   title: string
@@ -128,6 +182,7 @@ export interface KnowledgeItem {
   expire_date: string
   updated_at: string
   hits_30d?: number
+  source_doc?: { id: number; name: string | null }
 }
 
 export interface KnowledgeStats {
@@ -188,6 +243,9 @@ export interface ImportItemOut {
   validation: ValidationFinding[]
   result_kid: string | null
   fields: Record<string, string>
+  align_action: string
+  match_kid: string | null
+  is_form: boolean
 }
 
 export interface ImportBatchOut {
@@ -198,6 +256,7 @@ export interface ImportBatchOut {
   status: string
   items: ImportItemOut[]
   template_url: string
+  source_doc_id: number | null
 }
 
 export interface AuditLogItem {
