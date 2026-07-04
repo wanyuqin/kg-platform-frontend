@@ -9,6 +9,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
   Divider,
@@ -28,6 +29,7 @@ import {
   api,
   DomainItem,
   KNOWLEDGE_TYPES,
+  SourceDocItem,
   SubmitResult,
   TYPE_SECTIONS,
   ValidationFinding,
@@ -48,6 +50,8 @@ export default function KnowledgeForm() {
   const [checking, setChecking] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [published, setPublished] = useState<{ kid: string; uri: string } | null>(null)
+  const [sourceDocs, setSourceDocs] = useState<SourceDocItem[]>([])
+  const [newDoc, setNewDoc] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
@@ -69,6 +73,22 @@ export default function KnowledgeForm() {
       })
     })
   }, [editKid, form])
+
+  // domain/type 已选后拉取候选文件（同 domain+type 下 status=active 的知识文件）；
+  // 编辑态不需要选文件（后端 PUT 忽略归属变更），跳过请求
+  useEffect(() => {
+    if (editKid) return
+    if (!domain || !type) {
+      setSourceDocs([])
+      return
+    }
+    api
+      .get('/api/source-docs', { params: { domain, type, status: 'active' } })
+      .then((resp) => setSourceDocs(resp.data.items))
+    // domain/type 变化时清空已选文件与新建文件输入
+    form.setFieldsValue({ source_doc_id: undefined, new_doc_name: undefined })
+    setNewDoc(false)
+  }, [editKid, domain, type, form])
 
   const collectFields = useCallback((): Record<string, string> => {
     const values = form.getFieldsValue()
@@ -110,7 +130,7 @@ export default function KnowledgeForm() {
     const values = await form.validateFields()
     setSubmitting(true)
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         domain,
         type,
         title: values.title,
@@ -118,6 +138,14 @@ export default function KnowledgeForm() {
         tags: values.tags ?? [],
         effective_date: values.effective_date.format('YYYY-MM-DD'),
         save_mode: saveMode,
+      }
+      // 所属文件归属：新建时必须二选一；编辑时后端忽略归属变更，不传
+      if (!editKid) {
+        if (newDoc) {
+          body.new_doc_name = values.new_doc_name
+        } else {
+          body.source_doc_id = values.source_doc_id
+        }
       }
       const resp = editKid
         ? await api.put<SubmitResult>(`/api/knowledge/${editKid}`, body)
@@ -191,6 +219,41 @@ export default function KnowledgeForm() {
             </Typography.Text>
             <Divider style={{ margin: '12px 0' }} />
             <Form form={form} layout="vertical" onValuesChange={revalidate}>
+              {!editKid && (
+                <>
+                  {newDoc ? (
+                    <Form.Item
+                      name="new_doc_name"
+                      label="新建知识文件名"
+                      rules={[{ required: true, message: '请输入新建文件名' }]}
+                    >
+                      <Input placeholder="将新建一个知识文件承载该条目" maxLength={128} />
+                    </Form.Item>
+                  ) : (
+                    <Form.Item
+                      name="source_doc_id"
+                      label="所属知识文件"
+                      rules={[{ required: !newDoc, message: '请选择所属知识文件' }]}
+                    >
+                      <Select
+                        placeholder="选择该 domain+类型 下的知识文件"
+                        options={sourceDocs.map((d) => ({ value: d.id, label: d.name }))}
+                      />
+                    </Form.Item>
+                  )}
+                  <Form.Item>
+                    <Checkbox
+                      checked={newDoc}
+                      onChange={(e) => {
+                        setNewDoc(e.target.checked)
+                        form.setFieldsValue({ source_doc_id: undefined, new_doc_name: undefined })
+                      }}
+                    >
+                      新建文件
+                    </Checkbox>
+                  </Form.Item>
+                </>
+              )}
               <Form.Item name="title" label="标题" rules={[{ required: true }]}>
                 <Input placeholder="FAQ 类建议与标准问法一致" maxLength={256} />
               </Form.Item>

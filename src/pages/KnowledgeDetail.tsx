@@ -194,6 +194,15 @@ export default function KnowledgeDetail() {
           </Card>
           <Card title="溯源" size="small" style={{ marginBottom: 16 }}>
             <Descriptions column={1} size="small">
+              <Descriptions.Item label="所属文件">
+                {detail.source_doc ? (
+                  <a onClick={() => navigate(`/source-docs/${detail.source_doc!.id}`)}>
+                    {detail.source_doc.name ?? `#${detail.source_doc.id}`}
+                  </a>
+                ) : (
+                  '—'
+                )}
+              </Descriptions.Item>
               <Descriptions.Item label="source_type">{detail.source_type}</Descriptions.Item>
               <Descriptions.Item label="原文链接">
                 {detail.source_url ? (

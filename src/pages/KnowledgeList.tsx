@@ -229,6 +229,17 @@ export default function KnowledgeList() {
             ),
           },
           { title: '版本', dataIndex: 'version', width: 80, render: (v: number) => `v${v}` },
+          {
+            title: '来源文件',
+            width: 160,
+            ellipsis: true,
+            render: (_, r) =>
+              r.source_doc?.name ? (
+                <a onClick={() => navigate(`/source-docs/${r.source_doc!.id}`)}>{r.source_doc.name}</a>
+              ) : (
+                '—'
+              ),
+          },
           { title: '负责人', dataIndex: 'owner', width: 110, ellipsis: true },
           {
             title: '过期日期',
