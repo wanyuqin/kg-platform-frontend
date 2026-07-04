@@ -21,7 +21,7 @@ from app.console import auth
 from app.console.router_deps import current_user
 from app.console.templates import TEMPLATES
 from app.domain.kid import KNOWLEDGE_TYPES
-from app.domain.state_machine import Event, Status, transition
+from app.domain.state_machine import Event, InvalidTransition, Status, transition
 from app.pipeline import parser, sensitive, validators
 from app.pipeline.publish import DuplicateContent, PublishInput, publish, save_draft
 from app.storage.pg.models import (
@@ -624,10 +624,32 @@ async def confirm_import(
     else:
         doc = await session.get(SourceDoc, batch.source_doc_id)
     results = []
+    pending_deletes: list[str] = []  # 归档条目的索引删除延后到 commit 后（与 archive_knowledge 同序）
     for item_id in body.item_ids:
         item = by_id.get(item_id)
         if item is None:
             results.append({"item_id": item_id, "kid": None, "error": "条目不存在"})
+            continue
+        if item.align_action == "unchanged":
+            continue  # 幂等：无动作
+        if item.align_action == "disappeared":
+            row = await session.get(Knowledge, item.match_kid)
+            if row is None:
+                results.append({"item_id": item_id, "kid": None, "error": "条目不存在"})
+                continue
+            if row.status == Status.ARCHIVED:
+                # 幂等：重复 confirm（双击/重试）时已下架条目视为成功，不重复删索引
+                item.result_kid = row.kid
+                results.append({"item_id": item_id, "kid": row.kid, "error": None})
+                continue
+            try:
+                row.status = transition(Status(row.status), Event.ARCHIVE)
+            except InvalidTransition:
+                results.append({"item_id": item_id, "kid": row.kid, "error": "当前状态不允许下架"})
+                continue
+            item.result_kid = row.kid
+            pending_deletes.append(build_uri(row.domain_code, row.type, row.kid))
+            results.append({"item_id": item_id, "kid": row.kid, "error": None})
             continue
         if not item.is_valid:
             results.append({"item_id": item_id, "kid": None, "error": "blocking 校验未通过"})
@@ -635,13 +657,15 @@ async def confirm_import(
         title, fields = parser.parse_sections(item.content)
         if batch.type == "faq" and fields.get("标准问法"):
             title = fields["标准问法"]
+        target_kid = item.match_kid if item.align_action == "changed" else None
+        existing_row = await session.get(Knowledge, target_kid) if target_kid else None
         inp = PublishInput(
             domain_code=batch.domain_code,
             type_=batch.type,
             title=title or "未命名",
             sections=fields,
-            tags=[],
-            owner_user_id=user.user_id,
+            tags=existing_row.tags if existing_row else [],
+            owner_user_id=existing_row.owner_user_id if existing_row else user.user_id,
             source_type="markdown",
             source_ref=f"import:{batch.id}:{item.seq}",
             source_url=None,
@@ -652,7 +676,7 @@ async def confirm_import(
             doc_seq=item.seq,
         )
         try:
-            result = await publish(session, viking, inp)
+            result = await publish(session, viking, inp, kid=target_kid)
         except DuplicateContent as exc:
             results.append(
                 {"item_id": item_id, "kid": None, "error": f"与 {exc.existing_kid} 内容重复"}
@@ -660,8 +684,42 @@ async def confirm_import(
             continue
         item.result_kid = result.kid
         results.append({"item_id": item_id, "kid": result.kid, "error": None})
+    # 更新批次：按新文本序重写 doc_seq（spec §5）；首次导入批次（全 new）跳过
+    if any(i.align_action != "new" for i in items):
+        ordered: list[str] = []
+        for i in sorted(items, key=lambda x: x.seq):
+            if i.align_action in ("unchanged", "changed") and i.match_kid:
+                ordered.append(i.match_kid)
+            elif i.align_action == "new" and i.result_kid:
+                ordered.append(i.result_kid)
+        survivors = (
+            (
+                await session.execute(
+                    select(Knowledge)
+                    .where(
+                        Knowledge.source_doc_id == doc.id,
+                        Knowledge.status != Status.ARCHIVED,
+                    )
+                    .order_by(Knowledge.doc_seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        seq_map = {kid: n for n, kid in enumerate(ordered, start=1)}
+        tail = len(ordered)
+        for row in survivors:
+            if row.kid in seq_map:
+                row.doc_seq = seq_map[row.kid]
+            else:  # 留在架上的旧条目（如表单条目）排末尾，保持原相对顺序
+                tail += 1
+                row.doc_seq = tail
+        doc.updated_at = func.now()
     batch.status = "confirmed"
     await session.commit()
+    # commit 后再删索引（幂等，404 视为成功）：中途失败回滚时不至于索引已删而 DB 未落
+    for uri in pending_deletes:
+        await viking.delete(uri)
     return {"id": batch.id, "status": batch.status, "source_doc_id": batch.source_doc_id, "results": results}
 
 

@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.storage.pg.models import ConsoleUser, Domain, DomainMember
 from app.storage.pg.session import get_session
@@ -16,7 +17,13 @@ FAQ_MD_TWO = FAQ_MD_OK + (
 
 
 @pytest.fixture
-async def app_client(db_session):
+def viking_rec():
+    """共享的 RecordingViking：测试可断言 write/delete 调用记录。"""
+    return RecordingViking()
+
+
+@pytest.fixture
+async def app_client(db_session, viking_rec):
     from app.main import create_app
 
     app = create_app()
@@ -25,7 +32,7 @@ async def app_client(db_session):
         yield db_session
 
     app.dependency_overrides[get_session] = _session_override
-    app.dependency_overrides[get_viking] = lambda: RecordingViking().client
+    app.dependency_overrides[get_viking] = lambda: viking_rec.client
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
@@ -155,3 +162,99 @@ class TestSourceDocUpdate:
             cookies=await cookies_for("ou_member"),
         )
         assert resp.status_code == 409
+
+
+class TestConfirmUpdateBatch:
+    async def test_full_update_cycle(self, app_client, seeded, db_session):
+        from app.storage.pg.models import Knowledge as K
+
+        doc_id = await import_doc(app_client, "文件丙")
+        new_md = FAQ_MD_OK.replace("订单页申请。", "订单详情页申请。") + (
+            "\n# 新问题？\n\n## 标准问法\n新问题？\n\n## 相似问法\n- 新1\n- 新2\n\n"
+            "## 标准答案\n新答案。\n\n## 适用条件\n无\n"
+        )
+        preview = (
+            await app_client.post(
+                f"/api/source-docs/{doc_id}/update",
+                data={"text": new_md},
+                cookies=await cookies_for("ou_member"),
+            )
+        ).json()
+        selectable = [i["id"] for i in preview["items"] if i["align_action"] != "unchanged"]
+        resp = await app_client.post(
+            f"/api/imports/{preview['id']}/confirm",
+            json={"item_ids": selectable},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+
+        rows = (
+            (await db_session.execute(
+                select(K).where(K.source_doc_id == doc_id).order_by(K.doc_seq)
+            )).scalars().all()
+        )
+        by_title = {r.title: r for r in rows}
+        assert by_title["如何退款？"].version == 2          # changed → 版本+1
+        assert by_title["新问题？"].status == "published"     # new → 入库
+        assert by_title["发货时间？"].status == "archived"    # disappeared → 下架
+        # doc_seq 重写：新文本序（如何退款？=1，新问题？=2）
+        assert by_title["如何退款？"].doc_seq == 1
+        assert by_title["新问题？"].doc_seq == 2
+
+    async def test_disappeared_unselected_survives(self, app_client, seeded, db_session):
+        from app.storage.pg.models import Knowledge as K
+
+        doc_id = await import_doc(app_client, "文件丁")
+        preview = (
+            await app_client.post(
+                f"/api/source-docs/{doc_id}/update",
+                data={"text": FAQ_MD_OK},  # 只剩第一条 →「发货时间？」标 disappeared
+                cookies=await cookies_for("ou_member"),
+            )
+        ).json()
+        keep = [i["id"] for i in preview["items"] if i["align_action"] == "new"]  # 全 unchanged/disappeared → 空
+        resp = await app_client.post(
+            f"/api/imports/{preview['id']}/confirm",
+            json={"item_ids": keep},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+        rows = (
+            (await db_session.execute(
+                select(K).where(K.source_doc_id == doc_id)
+            )).scalars().all()
+        )
+        assert all(r.status == "published" for r in rows)  # 未勾选的 disappeared 不下架
+
+    async def test_confirm_twice_idempotent(self, app_client, seeded, db_session, viking_rec):
+        """重复 confirm（双击/重试）：第二次 200，disappeared 条目幂等成功不 500，
+        viking.delete 恰好一次（不重复删已下架条目的索引）。"""
+        from app.storage.pg.models import Knowledge as K
+
+        doc_id = await import_doc(app_client, "文件戊")
+        preview = (
+            await app_client.post(
+                f"/api/source-docs/{doc_id}/update",
+                data={"text": FAQ_MD_OK},  # 只剩第一条 →「发货时间？」标 disappeared
+                cookies=await cookies_for("ou_member"),
+            )
+        ).json()
+        disappeared = [i["id"] for i in preview["items"] if i["align_action"] == "disappeared"]
+        assert disappeared
+        for round_ in (1, 2):  # 第二轮：条目已 archived，需幂等成功
+            resp = await app_client.post(
+                f"/api/imports/{preview['id']}/confirm",
+                json={"item_ids": disappeared},
+                cookies=await cookies_for("ou_member"),
+            )
+            assert resp.status_code == 200, f"第 {round_} 次 confirm 失败"
+            for r in resp.json()["results"]:
+                assert r["error"] is None and r["kid"]
+        row = (
+            (await db_session.execute(
+                select(K).where(K.source_doc_id == doc_id, K.title == "发货时间？")
+            )).scalars().one()
+        )
+        assert row.status == "archived"
+        # 索引删除恰好一次：第二次 confirm 不重复 delete
+        assert viking_rec.deletes.count(f"viking://resources/free-order/faq/{row.kid}.md") == 1
