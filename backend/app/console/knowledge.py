@@ -623,6 +623,8 @@ async def confirm_import(
         batch.source_doc_id = doc.id
     else:
         doc = await session.get(SourceDoc, batch.source_doc_id)
+        if doc is None:  # 防御性检查：理论不可达（当前无 source_doc 删除路径）
+            raise errors.not_found()
     results = []
     pending_deletes: list[str] = []  # 归档条目的索引删除延后到 commit 后（与 archive_knowledge 同序）
     for item_id in body.item_ids:

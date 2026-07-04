@@ -1,6 +1,9 @@
 """知识文件（source_doc）查询与操作面（spec §4、§6）。"""
 
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,11 +12,12 @@ from app.config import get_settings
 from app.console import auth
 from app.console.knowledge import _batch_out, run_pipeline
 from app.console.router_deps import current_user
-from app.domain.state_machine import Status
+from app.domain.state_machine import Event, Status, transition
 from app.pipeline import parser
 from app.pipeline.align import ExistingEntry, align
 from app.storage.pg.models import (
     ConsoleUser,
+    Domain,
     DomainMember,
     ImportBatch,
     ImportItem,
@@ -22,6 +26,7 @@ from app.storage.pg.models import (
     SourceDoc,
 )
 from app.storage.pg.session import get_session
+from app.storage.viking.client import VikingClient, build_uri, get_viking
 
 router = APIRouter()
 
@@ -268,3 +273,95 @@ async def update_source_doc(
     await session.commit()
     form_kids = {r.kid for r in rows if r.source_ref.startswith("form:")}
     return _batch_out(batch, items, form_kids=form_kids)
+
+
+class RenewDocBody(BaseModel):
+    days: int | None = None
+
+
+@router.post("/source-docs/{doc_id}/renew")
+async def renew_source_doc(
+    doc_id: int,
+    body: RenewDocBody,
+    user: ConsoleUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """整体续期：非 draft/archived 条目续期至 today+days（或域默认 TTL）；expired 条目回 published（spec §4.2）。"""
+    doc = await load_doc(session, user, doc_id)
+    if doc.status != "active":
+        raise errors.conflict("知识文件已归档，不可续期")
+    domain = await session.get(Domain, doc.domain_code)
+    new_expire = date.today() + timedelta(days=body.days or domain.default_ttl_days)
+    rows = (
+        (await session.execute(
+            select(Knowledge).where(
+                Knowledge.source_doc_id == doc_id,
+                Knowledge.status.notin_([Status.DRAFT, Status.ARCHIVED]),
+            )
+        )).scalars().all()
+    )
+    for row in rows:
+        if row.status == Status.EXPIRED:
+            row.status = transition(Status(row.status), Event.RENEW)
+        row.expire_date = new_expire
+    await session.commit()
+    return {"renewed": len(rows), "expire_date": new_expire.isoformat()}
+
+
+@router.post("/source-docs/{doc_id}/offline")
+async def offline_source_doc(
+    doc_id: int,
+    user: ConsoleUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+    viking: VikingClient = Depends(get_viking),
+):
+    """整体下架：published/expired 条目 ARCHIVE，文件置 archived；先 commit 再删索引（幂等重试惯例）。"""
+    # 有意不加 active 守卫：重复下架幂等成功（archived_entries: 0），与条目级下架的幂等语义一致
+    doc = await load_doc(session, user, doc_id)
+    rows = (
+        (await session.execute(
+            select(Knowledge).where(
+                Knowledge.source_doc_id == doc_id,
+                Knowledge.status.in_([Status.PUBLISHED, Status.EXPIRED]),
+            )
+        )).scalars().all()
+    )
+    for row in rows:
+        row.status = transition(Status(row.status), Event.ARCHIVE)
+    doc.status = "archived"
+    await session.commit()
+    for row in rows:
+        await viking.delete(build_uri(row.domain_code, row.type, row.kid))  # 幂等：404 视为成功
+    return {"archived_entries": len(rows)}
+
+
+class RenameBody(BaseModel):
+    name: str
+
+
+@router.patch("/source-docs/{doc_id}")
+async def rename_source_doc(
+    doc_id: int,
+    body: RenameBody,
+    user: ConsoleUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """重命名知识文件；同域同名冲突 409（spec §3.1 唯一约束）。"""
+    doc = await load_doc(session, user, doc_id)
+    if doc.status != "active":
+        raise errors.conflict("知识文件已归档，不可重命名")
+    name = body.name.strip()
+    if not name:
+        raise errors.invalid_argument("名称不能为空")
+    dup = await session.execute(
+        select(SourceDoc.id).where(
+            SourceDoc.domain_code == doc.domain_code,
+            SourceDoc.name == name,
+            SourceDoc.id != doc_id,
+        )
+    )
+    if dup.scalar_one_or_none() is not None:
+        raise errors.conflict(f"知识文件「{name}」已存在")
+    doc.name = name
+    await session.commit()
+    return {"id": doc.id, "name": doc.name}

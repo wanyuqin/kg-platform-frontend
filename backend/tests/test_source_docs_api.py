@@ -258,3 +258,65 @@ class TestConfirmUpdateBatch:
         assert row.status == "archived"
         # 索引删除恰好一次：第二次 confirm 不重复 delete
         assert viking_rec.deletes.count(f"viking://resources/free-order/faq/{row.kid}.md") == 1
+
+
+class TestSourceDocOps:
+    async def test_renew_all(self, app_client, seeded):
+        doc_id = await import_doc(app_client, "续期文件")
+        resp = await app_client.post(
+            f"/api/source-docs/{doc_id}/renew", json={"days": 30},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.json()["renewed"] == 2
+        detail = (await app_client.get(
+            f"/api/source-docs/{doc_id}", cookies=await cookies_for("ou_member")
+        )).json()
+        from datetime import date, timedelta
+
+        want = (date.today() + timedelta(days=30)).isoformat()
+        assert all(e["expire_date"] == want for e in detail["entries"])
+
+    async def test_offline_archives_all(self, app_client, seeded):
+        doc_id = await import_doc(app_client, "下架文件")
+        resp = await app_client.post(
+            f"/api/source-docs/{doc_id}/offline", cookies=await cookies_for("ou_member")
+        )
+        assert resp.json()["archived_entries"] == 2
+        detail = (await app_client.get(
+            f"/api/source-docs/{doc_id}", cookies=await cookies_for("ou_member")
+        )).json()
+        assert detail["status"] == "archived"
+        assert all(e["status"] == "archived" for e in detail["entries"])
+
+    async def test_rename_conflict(self, app_client, seeded):
+        a = await import_doc(app_client, "甲名")
+        await import_doc(app_client, "乙名")
+        resp = await app_client.patch(
+            f"/api/source-docs/{a}", json={"name": "乙名"},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 409
+
+    async def test_renew_archived_doc_conflict(self, app_client, seeded):
+        """归档后只读：续期 → 409。"""
+        doc_id = await import_doc(app_client, "已归档续期")
+        await app_client.post(
+            f"/api/source-docs/{doc_id}/offline", cookies=await cookies_for("ou_member")
+        )
+        resp = await app_client.post(
+            f"/api/source-docs/{doc_id}/renew", json={"days": 30},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 409
+
+    async def test_rename_archived_doc_conflict(self, app_client, seeded):
+        """归档后只读：重命名 → 409。"""
+        doc_id = await import_doc(app_client, "已归档改名")
+        await app_client.post(
+            f"/api/source-docs/{doc_id}/offline", cookies=await cookies_for("ou_member")
+        )
+        resp = await app_client.patch(
+            f"/api/source-docs/{doc_id}", json={"name": "新名字"},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 409
