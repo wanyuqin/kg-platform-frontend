@@ -13,7 +13,8 @@
       "provider": "openai",
       "api_base": "https://model-gateway.company.example/v1",
       "api_key": "REPLACE_ME",
-      "model": "text-embedding-3-large"
+      "model": "text-embedding-3-large",
+      "dimension": 3072
     }
   },
   "vlm": {

@@ -27,10 +27,7 @@ def test_search_validation_maps_to_400_envelope():
     assert resp.status_code == 400
 
 
-def test_search_valid_request_reaches_stub():
-    resp = client.post("/v1/search", json={"query": "发票", "type": ["faq"]}, headers=AUTH)
-    assert resp.status_code == 501
-    assert resp.json()["error"]["code"] == "not_implemented"
+# 参数合法 + 未知 key → 401 的用例在 test_gateway.py（需要 DB，走依赖覆盖的 async client）
 
 
 def test_request_id_header_present():

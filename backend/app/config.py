@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     lark_app_id: str = ""
     lark_app_secret: str = ""
     session_ttl_hours: int = 12
+    dev_login_enabled: bool = False  # KG_DEV_LOGIN_ENABLED：本地联调登录后门，生产严禁开启
 
     default_top_k: int = 5
     max_top_k: int = 20

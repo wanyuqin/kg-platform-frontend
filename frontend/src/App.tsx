@@ -7,6 +7,7 @@ import { Layout, Menu, Typography } from 'antd'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import AuditLogs from './pages/AuditLogs'
+import DomainConfig from './pages/DomainConfig'
 import DomainList from './pages/DomainList'
 import ImportPreview from './pages/ImportPreview'
 import KnowledgeDetail from './pages/KnowledgeDetail'
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="/knowledge/import" element={<ImportPreview />} />
             <Route path="/knowledge/:kid" element={<KnowledgeDetail />} />
             <Route path="/domains" element={<DomainList />} />
+            <Route path="/domains/:code" element={<DomainConfig />} />
             <Route path="/audit-logs" element={<AuditLogs />} />
           </Routes>
         </Content>

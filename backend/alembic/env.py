@@ -8,7 +8,9 @@ from app.storage.pg.models import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers 默认 True 会禁用已导入模块的 logger——
+    # 同进程内迁移后继续运行的代码（测试、发布流水线）日志会被静默吞掉
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 config.set_main_option("sqlalchemy.url", get_settings().alembic_database_url)
 

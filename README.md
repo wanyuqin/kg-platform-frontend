@@ -5,6 +5,8 @@
 - [设计文档](https://my.feishu.cn/docx/C3dsddOUdojwZRxyypPc98pHnth)（评审已通过）
 - [技术设计文档（MVP）](https://my.feishu.cn/docx/F2RzduAxQoPUXax8mfucbePanLf)（本仓库结构与之对应，代码注释中的"技术设计文档 x.x"均指该文档章节）
 
+仓库内文档见 [backend/doc/](backend/doc/README.md)：按代码模块组织的设计文档、项目规划（roadmap）与 ADR 决策记录，每篇标注对应飞书章节可溯源。
+
 ## 结构
 
 ```
@@ -49,8 +51,20 @@ npm run dev                        # http://localhost:5173，/api 与 /v1 代理
 - **纯本地**：跑 Ollama 后 `provider` 填 `ollama`、`api_base` 填 `http://host.docker.internal:11434/v1`，
   embedding 用 `bge-m3` 等本地模型（无网也能开发，但摘要质量与线上有差异）。
 
+⚠️ **embedding 必须显式声明 `dimension`**（如 bge-m3 为 1024、text-embedding-3-large 为 3072）：
+不声明时 OpenViking 按默认维度建向量集合，与模型实际输出不一致会导致写入报
+`Dense vector dimension mismatch` 且检索崩溃；**集合维度在 workspace 初始化时冻结**，
+更换 embedding 模型或修正维度后必须清空 `workspace/` 重建（PoC 实测结论，无在线迁移）。
+
 容器内绑定 0.0.0.0 时 OpenViking 强制要求鉴权：`ov.conf` 已配 `server.auth_mode="api_key"` +
-`server.root_api_key`，后端通过 `KG_VIKING_API_KEY` 携带同一把 key（两处默认值一致，改动需同步）。
+`server.root_api_key`。⚠️ **ROOT key 不能访问数据 API**（PoC 实测 403）——须先用 root key
+创建租户拿**用户级 key** 配到 `KG_VIKING_API_KEY`：
+
+```bash
+curl -X POST -H "x-api-key: dev-local-root-key" -H "Content-Type: application/json" \
+  -d '{"account_id":"kg","admin_user_id":"kg-backend"}' \
+  http://localhost:1933/api/v1/admin/accounts   # 响应中的 user_key 即用户级 key
+```
 
 改完配置后 `docker compose -f docker-compose.dev.yml restart openviking`。
 容器内 `openviking-server doctor` 可做配置自检。
@@ -63,11 +77,19 @@ npm run dev                        # http://localhost:5173，/api 与 /v1 代理
 cd backend && uv run pytest
 ```
 
-## 当前状态（脚手架）
+## 当前状态（P1 完成，2026-07-04）
 
-已实现：错误 envelope 与 400/401 契约、请求 ID 中间件、状态机、kid 生成、
-敏感正则、content_hash 规范化、P1 全部 DDL（alembic 0001）、限流器、健康检查。
+P1 全链路已实现并端到端跑通：表单/Markdown 录入 → 校验流水线 → 发布 →
+OpenViking 入库 → Agent `/v1/search` + `/v1/knowledge/{kid}` → 审计留存；
+控制台 22 个接口 + 前端六页全部接通。进度与遗留项见 [backend/doc/roadmap.md](backend/doc/roadmap.md)。
 
-待实现（P1，按技术文档章节）：API Key 鉴权比对（十）、OpenViking 客户端落地（九，
-依赖 PoC 结论）、Markdown 解析与模板校验（8.1/8.2）、发布事务（8.4）、
-控制台各接口（七）与前端页面接入、审计消费协程（十一）、scheduler 三个任务体。
+## 本地联调（无飞书凭证时）
+
+生产登录走飞书 OAuth；本地可用开发登录后门（默认关闭）：
+
+```bash
+# 起后端时显式开启
+KG_DEV_LOGIN_ENABLED=1 KG_VIKING_API_KEY=<用户级key> uv run uvicorn app.main:app --port 8000
+# 浏览器访问（经前端代理），自动建用户并种 session cookie
+open "http://localhost:5173/api/auth/dev-login?user_id=dev&platform_admin=true"
+```

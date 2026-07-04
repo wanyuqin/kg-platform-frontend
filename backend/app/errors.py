@@ -21,6 +21,16 @@ def unauthorized(message: str = "invalid or missing API key") -> ApiError:
     return ApiError(401, "unauthorized", message)
 
 
+def conflict(message: str) -> ApiError:
+    # 资源冲突：domain code 重复 / content_hash 去重命中（设计 4.3.3 第一级漏斗）
+    return ApiError(409, "conflict", message)
+
+
+def forbidden() -> ApiError:
+    # 控制台已登录但角色不足（7.1 三级角色）；Gateway 侧越权用 not_found 不暴露存在性
+    return ApiError(403, "forbidden", "insufficient permission")
+
+
 def not_found() -> ApiError:
     # kid 不存在 / domain 越权 / 非 published / 已过期——统一 404，不暴露存在性
     return ApiError(404, "not_found", "knowledge not found")
