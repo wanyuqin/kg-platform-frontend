@@ -1,0 +1,31 @@
+[project]
+name = "kg-backend"
+version = "0.1.0"
+description = "知识管理平台后端：Gateway + 控制台 API + 清洗流水线（技术设计文档 二）"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
+    "redis>=5.0",
+    "pydantic-settings>=2.2",
+    "apscheduler>=3.10",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100

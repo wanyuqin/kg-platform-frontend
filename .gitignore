@@ -1,0 +1,22 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# node
+node_modules/
+dist/
+
+# env & local
+.env
+*.local
+.DS_Store
+
+# openviking 本地配置（含模型网关 key）与数据
+openviking/ov.conf
+openviking/workspace/
+
+# ts build cache
+*.tsbuildinfo

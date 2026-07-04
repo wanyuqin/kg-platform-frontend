@@ -1,0 +1,25 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 1933,
+    "auth_mode": "api_key",
+    "root_api_key": "dev-local-root-key"
+  },
+  "storage": {
+    "workspace": "/app/.openviking/workspace"
+  },
+  "embedding": {
+    "dense": {
+      "provider": "openai",
+      "api_base": "https://model-gateway.company.example/v1",
+      "api_key": "REPLACE_ME",
+      "model": "text-embedding-3-large"
+    }
+  },
+  "vlm": {
+    "provider": "openai",
+    "api_base": "https://model-gateway.company.example/v1",
+    "api_key": "REPLACE_ME",
+    "model": "REPLACE_WITH_GATEWAY_MODEL"
+  }
+}

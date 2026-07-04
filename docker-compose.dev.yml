@@ -1,0 +1,35 @@
+# 本地开发依赖（技术设计文档 13.1 集成测试环境）
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: kg
+      POSTGRES_PASSWORD: kg
+      POSTGRES_DB: kg
+    ports:
+      - "5433:5432"   # 宿主机 5433，避免与本机其他 PG 冲突
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  # OpenViking（技术设计文档 九）：官方镜像，默认端口 1933
+  # 首次使用：cp openviking/ov.conf.example openviking/ov.conf 并填入模型配置（见 README）
+  openviking:
+    image: ghcr.io/volcengine/openviking:latest
+    container_name: openviking
+    ports:
+      - "1933:1933"
+    volumes:
+      - ./openviking:/app/.openviking
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:1933/health', timeout=3)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pg_data:
