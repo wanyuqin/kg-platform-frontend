@@ -2,14 +2,14 @@
 
 > **溯源**：技术设计文档 三（DDL）、九（OpenViking）、十（Key 与限流）、十二（部署）；设计文档 五
 > **代码入口**：`app/storage/`（pg/ redis/ viking/）
-> **关联 ADR**：ADR-0002、ADR-0003、ADR-0004、ADR-0012、ADR-0018
+> **关联 ADR**：ADR-0002、ADR-0003、ADR-0004、ADR-0012、ADR-0018、ADR-0022
 > **最后同步**：2026-07-04
 
 ## PostgreSQL（storage/pg/）
 
 ### 总则（技术 3.1）
 
-时间字段一律 TIMESTAMPTZ；枚举用 VARCHAR + CHECK 约束（P2 扩展时免锁表改枚举类型）；迁移工具 Alembic，DDL 变更只走迁移脚本（当前基线 `alembic/versions/0001`，含 P1 全部 DDL 与 common 域种子数据）。**PostgreSQL 是元数据与状态的唯一事实来源**（ADR-0002），OpenViking 侧字段皆为冗余。
+时间字段一律 TIMESTAMPTZ；枚举用 VARCHAR + CHECK 约束（P2 扩展时免锁表改枚举类型）；迁移工具 Alembic，DDL 变更只走迁移脚本（基线 `alembic/versions/0001` 含 P1 全部 DDL 与 common 域种子数据；`0002_source_doc` 建 source_doc 表 + 三表加列 + 存量回填）。**PostgreSQL 是元数据与状态的唯一事实来源**（ADR-0002），OpenViking 侧字段皆为冗余。
 
 ### 表清单（P1）
 
@@ -19,12 +19,15 @@
 |-|-|-|
 | domain | 权限隔离与治理配置单位（设计 5.1） | code 即 viking:// 一级目录名（`^[a-z][a-z0-9-]{1,31}$`）；short_code 为 kid 域段（common 固定空串）；default_ttl_days 默认 365；type_topk JSONB 存类型级 top_k 覆盖；reviewer_user_id / feishu_folder_token 为 P2 预留 |
 | console_user / domain_member | 三级角色（设计 7.1） | user_id 为飞书 open_id；is_platform_admin 由运维置位；domain_member.role ∈ admin / member |
-| knowledge | 知识元数据主表（设计 4.2） | tags TEXT[] 自由输入可空（ADR-0016）+ GIN 索引；status 五态 CHECK；index_state 与 status 正交；risk_note P1 仅记录 |
+| knowledge | 知识元数据主表（设计 4.2） | tags TEXT[] 自由输入可空（ADR-0016）+ GIN 索引；status 五态 CHECK；index_state 与 status 正交；risk_note P1 仅记录；**source_doc_id FK 非空 + doc_seq 非空**（ADR-0022：全部条目必须属于文件；doc_seq 为文件内顺序，拼合全文用，对齐确认后按新文本序重写，表单追加取 max+1） |
 | knowledge_version | 版本正文快照（设计 4.2） | 审计还原与打标的数据基础；UNIQUE (kid, version)；read 接口从此表取全文（ADR-0018） |
 | kid_sequence | kid 序号发生器 | (domain_code, type) 主键，发布事务内取号 |
 | api_key | Agent API Key（设计 6.1.3） | 库内仅存 SHA-256(完整明文)；domain_whitelist 不含 common（鉴权时自动并入）；默认 10 QPS（ADR-0012） |
-| import_batch / import_item | Markdown 上传批次与拆分明细 | 拆分预览确认页的后端；item.validation 记录逐条校验结果，result_kid 确认入库后回填 |
+| source_doc | 知识文件＝管理容器（ADR-0022） | UNIQUE (domain_code, name)；type 单一（一个文件一种类型）；source CHECK ∈ manual（粘贴/在线编辑/表单起建）/ upload（上传 .md）/ feishu（P2 预留）；status CHECK ∈ active / archived；**无正文列**——全文由条目按 doc_seq 拼合，条目是唯一事实源 |
+| import_batch / import_item | Markdown 导入批次与拆分明细 | 拆分预览确认页的后端；item.validation 记录逐条校验结果，result_kid 确认入库后回填。batch.**source_doc_id 可空**（首次导入 confirm 建档时回填，预览放弃不留悬空文件；更新批次创建时即指向文件）+ **origin**（manual=粘贴 / upload=上传，落为文件 source 与批次历史展示）；item.**align_action**（new/changed/unchanged/disappeared，首次导入全 new）+ **match_kid**（对齐命中的旧条目 kid；disappeared 条目 content 为空串、seq 续在末尾） |
 | audit_log | 审计日志（设计 6.3） | 按月 RANGE 分区，保留 180 天；详见 [audit.md](audit.md) |
+
+**0002 存量回填**（一次性，2026-07-04 已在 dev 库执行）：已确认 import_batch 各生成一个文件（name=file_name，source='upload'，同名按创建序加 "(n)" 后缀去重）并回挂批次与 result_kid 条目（doc_seq 取 item.seq）；其余条目归入每 (domain, type) 自动创建的「手工录入-{type}」文件（source='manual'，doc_seq 按 created_at 排序；名字带 type 避免撞 (domain_code, name) 唯一约束）；回填完成后 knowledge.source_doc_id / doc_seq 收紧 NOT NULL。
 
 ### 关键索引与约束
 

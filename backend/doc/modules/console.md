@@ -1,8 +1,8 @@
 # console — 管理控制台 API（/api/*）
 
-> **溯源**：技术设计文档 七；设计文档 七（7.1 功能清单 / 7.2 页面草图）
+> **溯源**：技术设计文档 七；设计文档 七（7.1 功能清单 / 7.2 页面草图）；source_doc 设计 `docs/superpowers/specs/2026-07-04-source-doc-design.md`
 > **代码入口**：`app/console/`
-> **关联 ADR**：ADR-0021
+> **关联 ADR**：ADR-0021、ADR-0022
 > **最后同步**：2026-07-04
 
 ## 登录与权限
@@ -30,14 +30,36 @@
 | DELETE /api/keys/{key_id} | 吊销，即时生效 | 平台管理员 |
 | GET /api/knowledge | 列表：domain / type / status / tag / owner 筛选，page + page_size（≤100），updated_at 倒序 | domain 成员 |
 | GET /api/knowledge/{kid} | 详情：元数据 + 当前正文 + 版本快照列表（溯源查看） | domain 成员 |
-| POST /api/knowledge | 表单创建：`{domain, type, fields{段名: 内容}, tags[], owner, effective_date, expire_date?, save_mode: draft \| submit}`；submit 走流水线，响应含 kid、status、validation[] | domain 成员 |
+| POST /api/knowledge | 表单创建：`{domain, type, fields{段名: 内容}, tags[], owner, effective_date, expire_date?, save_mode: draft \| submit, source_doc_id? \| new_doc_name?}`；**所属知识文件必选**（选已有 active 同类型文件或就地新建 manual 文件，新建与首条条目同事务，ADR-0022）；submit 走流水线，响应含 kid、status、validation[] | domain 成员 |
 | PUT /api/knowledge/{kid} | 内容更新，重新走校验；published 状态下 version+1 | owner / domain 管理员 |
 | PATCH /api/knowledge/{kid}/meta | 元数据编辑：tags / owner / expire_date（飞书来源正文只读约束 P2 生效） | owner / domain 管理员 |
 | POST /api/knowledge/{kid}/archive ・ /renew | 下架 / 续期（renew 更新 expire_date） | owner / domain 管理员 |
-| POST /api/imports | Markdown 上传（multipart：file + domain + type；UTF-8，≤2MB）；同步解析 + 校验，返回 batch 与逐条结果 | domain 成员 |
-| GET /api/imports/{id} ・ POST /api/imports/{id}/confirm | 预览批次；勾选 item_ids[] 确认入库，逐条返回 kid 或失败原因 | domain 成员 |
+| POST /api/imports | Markdown 导入（multipart：domain + type + `file` 或 `text` 二选一 + doc_name；UTF-8，≤2MB）：**粘贴文本**（doc_name 必填，origin=manual）与**上传 .md**（doc_name 默认取文件名，origin=upload）双入口；同名文件此处即预查 409；同步解析 + 校验，返回 batch 与逐条结果 | domain 成员 |
+| GET /api/imports/{id} ・ POST /api/imports/{id}/confirm | 预览批次；勾选 item_ids[] 确认入库，逐条返回 kid 或失败原因。**首次导入 confirm 时才创建 source_doc**（预览放弃不留悬空文件，并发同名由唯一约束兜底 409）；更新批次按 align_action 分派（见下） | domain 成员 |
+| GET /api/source-docs | 知识文件列表：domain / type / status / q（名称模糊）筛选，含条目计数聚合（在架/总），updated_at 倒序 | domain 成员 |
+| GET /api/source-docs/{id} | 文件详情：基本信息 + 条目列表（按 doc_seq，含状态/版本/过期日）+ 批次历史（origin、操作人、对齐动作统计） | domain 成员 |
+| GET /api/source-docs/{id}/content | 拼合全文 Markdown：非 draft / 非 archived 条目当前版本快照按 doc_seq 拼合（全文视图与在线编辑器预填共用） | domain 成员 |
+| POST /api/source-docs/{id}/update | 全文更新（text 或 file 二选一）：重拆 + 对齐 → 生成带 align_action 的新批次返回预览；确认仍走 /api/imports/{id}/confirm | domain 成员 |
+| POST /api/source-docs/{id}/renew | 整体续期：非 draft/archived 条目 expire_date 置为 today+days（缺省 domain 的 default_ttl_days）；expired 条目回 published | domain 成员 |
+| POST /api/source-docs/{id}/offline | 整体下架：published/expired 条目 ARCHIVE + 文件置 archived；先 commit 再删索引，重复下架幂等成功 | domain 成员 |
+| PATCH /api/source-docs/{id} | 重命名（domain 内同名 409）；归档文件不可改 | domain 成员 |
 | GET /api/templates/{type}.md | 下载该类型标准 Markdown 模板（拒收提示中引用） | 登录即可 |
 | GET /api/audit-logs ・ /api/audit-logs/export | 审计查询（时间 / key / action 过滤）与 CSV 导出 | 平台管理员 |
+
+## 知识文件与更新对齐（ADR-0022，`source_docs.py` + `pipeline/align.py`）
+
+文件＝管理容器，条目仍是生命周期原子；全部条目必须属于文件。文件级接口的权限与知识条目同口径：不存在或越权统一 404 不暴露存在性；归档文件的 update / renew / rename 返回 409 只读。
+
+**对齐规则**（P1 零 LLM，标题精确匹配，FAQ 用「标准问法」段覆盖标题）：
+
+| 情形 | align_action | 预览默认勾选 | confirm 动作 |
+|-|-|-|-|
+| 标题匹配且 content_hash 相同 | unchanged | 不勾 | 无（勾了也跳过，幂等） |
+| 标题匹配、内容变化 | changed | 勾 | 原 kid 发布新版本（version+1），保留原 tags/owner |
+| 新标题 | new | 勾 | 新条目入库 |
+| 旧条目标题未出现 | disappeared | 勾 | 下架（归档条目重复 confirm 视为成功，不重复删索引） |
+
+边界口径：**表单条目**（source_ref 前缀 `form:`）disappeared 时默认**不勾选**（响应的 `is_form` 字段驱动前端），避免外部文档粘贴更新时被误下架；**改标题**被判为"消失＋新增"，P1 已知边界由预览页人工纠正。confirm 后按新文本顺序重写存活条目 doc_seq，未出现在新文本且仍在架的条目排末尾保持原相对顺序；首次导入批次（全 new）跳过重写。
 
 ## 与前端页面的对应（设计 7.2，九页线框）
 
@@ -46,7 +68,8 @@
 | 知识列表 | P1 | GET /api/knowledge |
 | 知识详情（含版本快照溯源） | P1 | GET /api/knowledge/{kid} |
 | 表单录入 | P1 | POST /api/knowledge |
-| 拆分预览确认（Markdown 上传与飞书首次导入共用） | P1 | /api/imports 系列 |
+| 拆分预览确认（Markdown 上传与飞书首次导入共用；双 tab 粘贴/上传，更新模式带对齐徽标与汇总） | P1 | /api/imports 系列 |
+| 知识文件列表 / 详情（条目、全文、变更历史三视图，在线编辑全文入口） | P1 | /api/source-docs 系列 |
 | domain 列表 / domain 配置 | P1 | /api/domains 系列 |
 | 审核待办队列（三 tab，含人工待补齐） | P2 | review_task 表随 P2 交付 |
 | 打标 | P2 | 审计查询派生 |
@@ -62,4 +85,4 @@
 - **草稿正文存储**：技术文档"快照只在发布时落"指版本历史（version≥1）；草稿正文借 `knowledge_version` 的 **version=0 槽位**承载（meta.fields 存表单原始字段供回填），发布时删除，不进入版本历史。清理任务同步删除该槽位。
 - **错误码补充**：已登录但角色不足返回 **403 forbidden**（区别于未登录 401；Gateway 侧越权仍统一 404 不暴露存在性）；资源冲突（domain 重复 / 内容重复）返回 **409 conflict**。
 - **快照 meta 含 fields**：发布快照的 meta 增加 `fields`（表单原始字段），编辑已发布知识时回填表单用。
-- 模块文件结构：`auth.py`（session/OAuth/权限）、`admin.py`（domain/成员/key/审计）、`knowledge.py`（CRUD/导入/模板）、`templates.py`（六类模板常量）、`router.py`（装配 + 登录端点）。
+- 模块文件结构：`auth.py`（session/OAuth/权限）、`admin.py`（domain/成员/key/审计）、`knowledge.py`（CRUD/导入/模板）、`source_docs.py`（知识文件查询与文件级操作）、`templates.py`（六类模板常量）、`router.py`（装配 + 登录端点）；对齐算法在 `pipeline/align.py`。

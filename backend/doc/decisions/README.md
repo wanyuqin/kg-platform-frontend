@@ -27,3 +27,4 @@
 | [0019](0019-kid-and-uri-rules.md) | kid 三段式与 URI 两级平铺规则 | 已采纳 | 2026-07-04 |
 | [0020](0020-expired-filter-at-query.md) | expired 语义 P1 用查询时兜底过滤实现 | 已采纳 | 2026-07-04 |
 | [0021](0021-console-roles-draft-reject.md) | 控制台三级角色、草稿可见性、驳回回退 | 已采纳 | 2026-07-04 |
+| [0022](0022-source-doc.md) | 知识文件（source_doc）＝管理容器，条目仍是生命周期原子 | 已采纳 | 2026-07-04 |
