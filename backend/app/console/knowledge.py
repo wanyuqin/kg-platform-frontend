@@ -445,31 +445,45 @@ async def renew_knowledge(
 async def upload_import(
     domain: str = Form(),
     type: str = Form(),  # noqa: A002
-    file: UploadFile = File(),
+    doc_name: str | None = Form(None),
+    text: str | None = Form(None),
+    file: UploadFile | None = File(None),
     user: ConsoleUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await auth.require_domain_role(session, user, domain, {"admin", "member"})
     if type not in KNOWLEDGE_TYPES:
         raise errors.invalid_argument(f"unknown type: {type}")
-    raw = await file.read()
-    if len(raw) > get_settings().upload_max_mb * 1024 * 1024:
-        raise errors.invalid_argument(f"文件超过 {get_settings().upload_max_mb}MB 上限")
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise errors.invalid_argument("文件必须为 UTF-8 编码")
-
-    batch = ImportBatch(
-        domain_code=domain,
-        type=type,
-        file_name=file.filename or "upload.md",
-        created_by=user.user_id,
+    if (file is None) == (text is None):
+        raise errors.invalid_argument("file 与 text 必须二选一")
+    if file is not None:
+        raw = await file.read()
+        if len(raw) > get_settings().upload_max_mb * 1024 * 1024:
+            raise errors.invalid_argument(f"文件超过 {get_settings().upload_max_mb}MB 上限")
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise errors.invalid_argument("文件必须为 UTF-8 编码")
+        name = (doc_name or "").strip() or (file.filename or "").removesuffix(".md")
+    else:
+        if len(text.encode()) > get_settings().upload_max_mb * 1024 * 1024:
+            raise errors.invalid_argument(f"文本超过 {get_settings().upload_max_mb}MB 上限")
+        content = text
+        name = (doc_name or "").strip()
+    if not name:
+        raise errors.invalid_argument("必须提供 doc_name（知识文件名）")
+    # 同名预查（spec §6：第一步即报错；confirm 唯一约束兜底并发）
+    dup = await session.execute(
+        select(SourceDoc.id).where(SourceDoc.domain_code == domain, SourceDoc.name == name)
     )
+    if dup.scalar_one_or_none() is not None:
+        raise errors.conflict(f"知识文件「{name}」已存在")
+
+    batch = ImportBatch(domain_code=domain, type=type, file_name=name, created_by=user.user_id)
     session.add(batch)
     await session.flush()
     items = []
-    for seq, entry in enumerate(parser.split_entries(text), start=1):
+    for seq, entry in enumerate(parser.split_entries(content), start=1):
         title, fields = parser.parse_sections(entry)
         if type == "faq" and fields.get("标准问法"):
             title = fields["标准问法"]  # FAQ 以标准问法覆盖（8.1）

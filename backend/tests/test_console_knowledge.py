@@ -306,6 +306,54 @@ class TestImports:
         assert resp.status_code == 400
 
 
+FAQ_MD_OK = (
+    "# 如何退款？\n\n## 标准问法\n如何退款？\n\n## 相似问法\n- 退款流程\n- 退钱\n\n"
+    "## 标准答案\n订单页申请。\n\n## 适用条件\n7 天内\n"
+)
+
+
+class TestImportPasteText:
+    async def test_paste_text_creates_batch(self, app_client, seeded):
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "doc_name": "粘贴FAQ", "text": FAQ_MD_OK},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["file_name"] == "粘贴FAQ"
+        assert len(body["items"]) == 1
+
+    async def test_paste_without_doc_name_rejected(self, app_client, seeded):
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "text": FAQ_MD_OK},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 400
+
+    async def test_neither_file_nor_text_rejected(self, app_client, seeded):
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "doc_name": "x"},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 400
+
+    async def test_duplicate_doc_name_conflict(self, app_client, seeded, db_session):
+        from app.storage.pg.models import SourceDoc
+
+        db_session.add(SourceDoc(name="粘贴FAQ", domain_code="free-order", type="faq",
+                                 source="manual", created_by="t"))
+        await db_session.commit()
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "doc_name": "粘贴FAQ", "text": FAQ_MD_OK},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 409
+
+
 class TestTemplates:
     async def test_download_template(self, app_client, seeded):
         resp = await app_client.get(
