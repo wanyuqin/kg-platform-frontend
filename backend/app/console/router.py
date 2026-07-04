@@ -11,12 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import errors
 from app.config import get_settings
-from app.console import admin, auth, knowledge
+from app.console import admin, auth, knowledge, source_docs
 from app.storage.pg.session import get_session
 
 router = APIRouter(prefix="/api", tags=["console"])
 router.include_router(admin.router)
 router.include_router(knowledge.router)
+router.include_router(source_docs.router)
 
 
 @router.get("/auth/login")
