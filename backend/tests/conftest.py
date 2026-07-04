@@ -110,3 +110,17 @@ async def db_session(migrated_db):
             yield session
         await outer.rollback()
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def seed_doc(db_session):
+    """给需要直接造 knowledge 行的用例一个默认知识文件。"""
+    from app.storage.pg.models import SourceDoc
+
+    doc = SourceDoc(
+        name="测试文件", domain_code="free-order", type="faq",
+        source="manual", created_by="t",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    return doc
