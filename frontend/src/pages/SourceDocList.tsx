@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Input, Popconfirm, Select, Space, Table, Tag, message } from 'antd'
-import { useNavigate } from 'react-router-dom'
+import { Button, Card, Input, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { api, DomainItem, SOURCE_LABEL, SourceDocItem, TYPE_COLOR } from '../api/client'
 
 // 知识文件列表（spec §4.2）：domain → 文件 → 条目 的中间层视图
 export default function SourceDocList() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [domains, setDomains] = useState<DomainItem[]>([])
-  const [domain, setDomain] = useState<string>()
+  const [domain, setDomain] = useState<string | undefined>(searchParams.get('domain') ?? undefined)
   const [status, setStatus] = useState<string>()
   const [q, setQ] = useState('')
   const [items, setItems] = useState<SourceDocItem[]>([])
@@ -16,11 +17,13 @@ export default function SourceDocList() {
 
   useEffect(() => {
     api.get('/api/domains/mine').then((resp) => {
-      const list = resp.data.items.filter((d: DomainItem) => d.code !== 'common')
+      const list = resp.data.items
       setDomains(list)
-      if (list.length) setDomain(list[0].code)
+      const requestedDomain = searchParams.get('domain') ?? undefined
+      const fallbackDomain = list[0]?.code
+      setDomain(list.some((d: DomainItem) => d.code === requestedDomain) ? requestedDomain : fallbackDomain)
     })
-  }, [])
+  }, [searchParams])
 
   const load = useCallback(() => {
     if (!domain) return
@@ -32,6 +35,17 @@ export default function SourceDocList() {
   }, [domain, status, q])
 
   useEffect(load, [load])
+
+  const selectDomain = (value: string) => {
+    setDomain(value)
+    setSearchParams({ domain: value })
+  }
+
+  const goEntries = (doc: SourceDocItem) => {
+    navigate(
+      `/knowledge?domain=${encodeURIComponent(doc.domain)}&source_doc_id=${doc.id}&source_doc_name=${encodeURIComponent(doc.name)}`,
+    )
+  }
 
   const offline = async (id: number) => {
     const resp = await api.post(`/api/source-docs/${id}/offline`)
@@ -53,9 +67,12 @@ export default function SourceDocList() {
           <Select
             style={{ width: 180 }}
             value={domain}
-            onChange={setDomain}
+            onChange={selectDomain}
             options={domains.map((d) => ({ value: d.code, label: d.code }))}
           />
+          <Typography.Text type="secondary" style={{ fontWeight: 'normal', fontSize: 13 }}>
+            点击文件进入该文件的知识条目列表
+          </Typography.Text>
         </Space>
       }
       extra={
@@ -87,7 +104,7 @@ export default function SourceDocList() {
           {
             title: '名称',
             dataIndex: 'name',
-            render: (name, r) => <a onClick={() => navigate(`/source-docs/${r.id}`)}>{name}</a>,
+            render: (name, r) => <a onClick={() => goEntries(r)}>{name}</a>,
           },
           {
             title: '类型',
@@ -109,7 +126,8 @@ export default function SourceDocList() {
             title: '操作',
             render: (_, r) => (
               <Space>
-                <a onClick={() => navigate(`/source-docs/${r.id}`)}>查看</a>
+                <a onClick={() => goEntries(r)}>条目</a>
+                <a onClick={() => navigate(`/source-docs/${r.id}`)}>详情</a>
                 {r.status === 'active' && (
                   <>
                     <a onClick={() => navigate(`/knowledge/import?docId=${r.id}`)}>更新</a>

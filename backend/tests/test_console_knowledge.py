@@ -454,6 +454,52 @@ class TestSourceDocAttachment:
         )
         assert resp.json()["kid"] is not None
 
+    async def test_list_and_stats_can_filter_by_source_doc(self, app_client, seeded, db_session):
+        from app.storage.pg.models import SourceDoc
+
+        doc_a = SourceDoc(name="文件A", domain_code="free-order", type="faq",
+                          source="manual", created_by="ou_member")
+        doc_b = SourceDoc(name="文件B", domain_code="free-order", type="faq",
+                          source="manual", created_by="ou_member")
+        db_session.add_all([doc_a, doc_b])
+        await db_session.commit()
+
+        cookies = await cookies_for("ou_member")
+        await app_client.post(
+            "/api/knowledge",
+            json=create_body(
+                source_doc_id=doc_a.id,
+                new_doc_name=None,
+                title="文件A条目",
+                fields={**FIELDS_OK, "标准答案": "文件A答案。"},
+            ),
+            cookies=cookies,
+        )
+        await app_client.post(
+            "/api/knowledge",
+            json=create_body(
+                source_doc_id=doc_b.id,
+                new_doc_name=None,
+                title="文件B条目",
+                fields={**FIELDS_OK, "标准答案": "文件B答案。"},
+            ),
+            cookies=cookies,
+        )
+
+        listed = await app_client.get(
+            "/api/knowledge",
+            params={"domain": "free-order", "source_doc_id": doc_a.id},
+            cookies=cookies,
+        )
+        assert [item["source_doc"]["id"] for item in listed.json()["items"]] == [doc_a.id]
+
+        stats = await app_client.get(
+            "/api/knowledge/stats",
+            params={"domain": "free-order", "source_doc_id": doc_a.id},
+            cookies=cookies,
+        )
+        assert stats.json() == {"total": 1, "by_type": {"faq": 1}}
+
     async def test_create_without_doc_rejected(self, app_client, seeded):
         resp = await app_client.post(
             "/api/knowledge", json=create_body(new_doc_name=None), cookies=await cookies_for("ou_member")

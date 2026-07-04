@@ -24,8 +24,8 @@ const BAR_COLORS: Record<string, string> = {
   term: '#597ef7',
 }
 
-// ⑥ domain 列表页（线稿 7.2-⑥，平台管理员）：卡片式全域概览、
-// 知识量与类型分布条、Agent 数、「配置 →」进配置页
+// ⑥ domain 列表页：三层主流程入口（domain → 知识文件 → 知识条目），
+// 同时保留平台管理员配置入口
 export default function DomainList() {
   const navigate = useNavigate()
   const [items, setItems] = useState<DomainItem[]>([])
@@ -82,7 +82,7 @@ export default function DomainList() {
 
   return (
     <Card
-      title="domain 管理（平台管理员）"
+      title="Domain"
       loading={loading}
       extra={
         <Button type="primary" onClick={() => setCreateOpen(true)}>
@@ -92,30 +92,55 @@ export default function DomainList() {
     >
       <Row gutter={[16, 16]}>
         {items.map((d) => (
-          <Col span={12} key={d.code}>
-            <Card>
-              <Space align="baseline">
-                <Typography.Title level={4} style={{ margin: 0 }}>
-                  {d.code}
-                </Typography.Title>
-                <Typography.Text type="secondary">{d.name}</Typography.Text>
-              </Space>
-              <div style={{ margin: '8px 0' }}>
-                <Tag>启用</Tag>
-                {d.code === 'common' && <Tag color="blue">所有 Agent 默认可见（6.1.3）</Tag>}
+          <Col xs={24} lg={12} key={d.code} style={{ display: 'flex' }}>
+            <Card
+              hoverable
+              style={{ width: '100%', height: '100%' }}
+              styles={{ body: { minHeight: 180, display: 'flex', flexDirection: 'column' } }}
+              onClick={() => navigate(`/source-docs?domain=${encodeURIComponent(d.code)}`)}
+            >
+              <div style={{ flex: 1 }}>
+                <Space align="baseline">
+                  <Typography.Title level={4} style={{ margin: 0 }}>
+                    {d.code}
+                  </Typography.Title>
+                  <Typography.Text type="secondary">{d.name}</Typography.Text>
+                </Space>
+                <div style={{ margin: '8px 0' }}>
+                  <Tag>启用</Tag>
+                  {d.code === 'common' && <Tag color="blue">所有 Agent 默认可见（6.1.3）</Tag>}
+                </div>
+                <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Typography.Text>知识 {d.stats?.total ?? 0} 条</Typography.Text>
+                  <Typography.Text>Agent {d.stats?.agents ?? 0} 个</Typography.Text>
+                </Space>
+                {distribution(d)}
               </div>
-              <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Typography.Text>知识 {d.stats?.total ?? 0} 条</Typography.Text>
-                <Typography.Text>Agent {d.stats?.agents ?? 0} 个</Typography.Text>
-              </Space>
-              {distribution(d)}
-              <Space style={{ width: '100%', justifyContent: 'space-between', marginTop: 12 }}>
+              <Space style={{ width: '100%', justifyContent: 'space-between', marginTop: 16 }}>
                 <Typography.Text type="secondary">
                   默认有效期 {d.default_ttl_days} 天
                 </Typography.Text>
-                <Button size="small" onClick={() => navigate(`/domains/${d.code}`)}>
-                  配置 →
-                </Button>
+                <Space>
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      navigate(`/source-docs?domain=${encodeURIComponent(d.code)}`)
+                    }}
+                  >
+                    查看文件
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      navigate(`/domains/${d.code}`)
+                    }}
+                  >
+                    配置
+                  </Button>
+                </Space>
               </Space>
             </Card>
           </Col>

@@ -207,6 +207,7 @@ async def create_knowledge(
 @router.get("/knowledge")
 async def list_knowledge(
     domain: str | None = None,
+    source_doc_id: int | None = None,
     type: str | None = None,  # noqa: A002  与接口契约字段名一致
     status: str | None = None,
     tag: str | None = None,
@@ -230,6 +231,8 @@ async def list_knowledge(
     )
     if domain:
         stmt = stmt.where(Knowledge.domain_code == domain)
+    if source_doc_id is not None:
+        stmt = stmt.where(Knowledge.source_doc_id == source_doc_id)
     if type:
         stmt = stmt.where(Knowledge.type == type)
     if status:
@@ -269,6 +272,7 @@ async def list_knowledge(
 @router.get("/knowledge/stats")
 async def knowledge_stats(
     domain: str | None = None,
+    source_doc_id: int | None = None,
     user: ConsoleUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -284,6 +288,8 @@ async def knowledge_stats(
     )
     if domain:
         stmt = stmt.where(Knowledge.domain_code == domain)
+    if source_doc_id is not None:
+        stmt = stmt.where(Knowledge.source_doc_id == source_doc_id)
     rows = (await session.execute(stmt)).all()
     by_type = {type_: n for type_, n in rows}
     return {"total": sum(by_type.values()), "by_type": by_type}

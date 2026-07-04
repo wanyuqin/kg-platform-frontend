@@ -17,7 +17,7 @@ import {
   message,
 } from 'antd'
 import dayjs, { Dayjs } from 'dayjs'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import {
   api,
@@ -34,8 +34,16 @@ import {
 // 标题/kid 搜索、owner 筛选、三合一新建入口、行内操作（线稿 7.2-⑤）
 export default function KnowledgeList() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [domains, setDomains] = useState<DomainItem[]>([])
-  const [domain, setDomain] = useState<string>()
+  const [domain, setDomain] = useState<string | undefined>(searchParams.get('domain') ?? undefined)
+  const [sourceDocId, setSourceDocId] = useState<number | undefined>(() => {
+    const raw = searchParams.get('source_doc_id')
+    return raw ? Number(raw) : undefined
+  })
+  const [sourceDocName, setSourceDocName] = useState<string | undefined>(
+    searchParams.get('source_doc_name') ?? undefined,
+  )
   const [stats, setStats] = useState<KnowledgeStats>({ total: 0, by_type: {} })
   const [typeTab, setTypeTab] = useState('all')
   const [status, setStatus] = useState<string | undefined>('published')
@@ -50,10 +58,21 @@ export default function KnowledgeList() {
   useEffect(() => {
     api.get('/api/domains/mine').then((resp) => {
       setDomains(resp.data.items)
+      const requestedDomain = searchParams.get('domain') ?? undefined
       const first = resp.data.items.find((d: DomainItem) => d.code !== 'common')
-      setDomain(first?.code ?? resp.data.items[0]?.code)
+      setDomain(requestedDomain ?? first?.code ?? resp.data.items[0]?.code)
     })
-  }, [])
+  }, [searchParams])
+
+  useEffect(() => {
+    const nextDomain = searchParams.get('domain') ?? undefined
+    const nextSourceDocId = searchParams.get('source_doc_id')
+    setDomain(nextDomain ?? domain)
+    setSourceDocId(nextSourceDocId ? Number(nextSourceDocId) : undefined)
+    setSourceDocName(searchParams.get('source_doc_name') ?? undefined)
+    setPage(1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   const load = useCallback(async () => {
     if (!domain) return
@@ -63,6 +82,7 @@ export default function KnowledgeList() {
         api.get('/api/knowledge', {
           params: {
             domain,
+            source_doc_id: sourceDocId,
             page,
             page_size: 20,
             type: typeTab === 'all' ? undefined : typeTab,
@@ -71,14 +91,22 @@ export default function KnowledgeList() {
             owner: owner || undefined,
           },
         }),
-        api.get('/api/knowledge/stats', { params: { domain } }),
+        api.get('/api/knowledge/stats', { params: { domain, source_doc_id: sourceDocId } }),
       ])
       setItems(listResp.data.items)
       setStats(statsResp.data)
     } finally {
       setLoading(false)
     }
-  }, [domain, page, typeTab, status, q, owner])
+  }, [domain, sourceDocId, page, typeTab, status, q, owner])
+
+  const selectDomain = (value: string) => {
+    setDomain(value)
+    setSourceDocId(undefined)
+    setSourceDocName(undefined)
+    setPage(1)
+    setSearchParams({ domain: value })
+  }
 
   useEffect(() => {
     load()
@@ -115,40 +143,44 @@ export default function KnowledgeList() {
     <Card
       title={
         <Space>
-          知识管理
+          知识条目
           <Select
             size="small"
             style={{ width: 160 }}
             value={domain}
-            onChange={(v) => {
-              setDomain(v)
-              setPage(1)
-            }}
+            onChange={selectDomain}
             options={domains.map((d) => ({ value: d.code, label: d.code }))}
           />
           <Typography.Text type="secondary" style={{ fontWeight: 'normal', fontSize: 13 }}>
-            当前知识域（仅显示有权限的 domain）
+            {sourceDocId ? `来源文件：${sourceDocName ?? sourceDocId}` : '当前知识域（仅显示有权限的 domain）'}
           </Typography.Text>
         </Space>
       }
       extra={
-        <Dropdown
-          menu={{
-            items: [
-              { key: 'form', label: '表单创建' },
-              { key: 'import', label: '上传 Markdown' },
-              { key: 'feishu', label: '注册飞书文档（P2）', disabled: true },
-            ],
-            onClick: ({ key }) => {
-              if (key === 'form') navigate('/knowledge/new')
-              if (key === 'import') navigate('/knowledge/import')
-            },
-          }}
-        >
-          <Button type="primary">
-            + 新建 <DownOutlined />
-          </Button>
-        </Dropdown>
+        <Space>
+          {domain && (
+            <Button onClick={() => navigate(`/source-docs?domain=${encodeURIComponent(domain)}`)}>
+              返回文件列表
+            </Button>
+          )}
+          <Dropdown
+            menu={{
+              items: [
+                { key: 'form', label: '表单创建' },
+                { key: 'import', label: '上传 Markdown' },
+                { key: 'feishu', label: '注册飞书文档（P2）', disabled: true },
+              ],
+              onClick: ({ key }) => {
+                if (key === 'form') navigate('/knowledge/new')
+                if (key === 'import') navigate('/knowledge/import')
+              },
+            }}
+          >
+            <Button type="primary">
+              + 新建 <DownOutlined />
+            </Button>
+          </Dropdown>
+        </Space>
       }
     >
       <Tabs
@@ -203,8 +235,10 @@ export default function KnowledgeList() {
         loading={loading}
         dataSource={items}
         pagination={{ current: page, pageSize: 20, onChange: setPage }}
+        scroll={{ x: 1460 }}
+        tableLayout="fixed"
         columns={[
-          { title: '标题', dataIndex: 'title', ellipsis: true },
+          { title: '标题', dataIndex: 'title', width: 320, ellipsis: { showTitle: true } },
           {
             title: '类型',
             dataIndex: 'type',
@@ -218,7 +252,7 @@ export default function KnowledgeList() {
             render: (_, r) => (
               <Space size={4}>
                 <Tag
-              color={r.status === 'published' ? 'green' : r.status === 'expired' ? 'red' : 'default'}
+                  color={r.status === 'published' ? 'green' : r.status === 'expired' ? 'red' : 'default'}
                 >
                   {STATUS_LABEL[r.status] ?? r.status}
                 </Tag>

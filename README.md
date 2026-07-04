@@ -17,6 +17,31 @@ docker-compose.dev.yml   本地 PG + Redis（OpenViking 待 PoC 后补充）
 
 ## 本地启动
 
+推荐使用脚本一键启动前后端与本地依赖：
+
+```bash
+./scripts/dev.sh
+```
+
+脚本会自动：
+
+- 启动 Docker 中间件（PG + Redis + OpenViking）
+- 缺失时从示例文件复制 `backend/.env` 与 `openviking/ov.conf`
+- 执行 `uv sync` 与 Alembic 迁移
+- 缺失 `node_modules` 时执行 `npm install`
+- 并行启动后端 `:8000` 与前端 `:5173`
+
+常用开关：
+
+```bash
+START_DOCKER=0 ./scripts/dev.sh      # 不启动 Docker 中间件
+RUN_MIGRATIONS=0 ./scripts/dev.sh   # 跳过数据库迁移
+INSTALL_DEPS=0 ./scripts/dev.sh     # 跳过前端依赖安装检查
+BACKEND_PORT=8001 ./scripts/dev.sh  # 使用其他后端端口
+```
+
+手动启动方式：
+
 ```bash
 # 1. 依赖中间件（PG + Redis + OpenViking，全部 Docker）
 cp openviking/ov.conf.example openviking/ov.conf   # 填入模型配置，见下节
