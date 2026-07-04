@@ -158,6 +158,7 @@ class ImportBatch(Base):
     file_name: Mapped[str] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String(16), server_default=text("'previewing'"))
     source_doc_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("source_doc.id"))
+    origin: Mapped[str] = mapped_column(String(16), server_default=text("'upload'"))
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
 

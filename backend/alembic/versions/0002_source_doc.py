@@ -36,6 +36,7 @@ def upgrade() -> None:
         sa.CheckConstraint("status IN ('active','archived')"),
     )
     op.add_column("import_batch", sa.Column("source_doc_id", sa.BigInteger, sa.ForeignKey("source_doc.id")))
+    op.add_column("import_batch", sa.Column("origin", sa.String(16), nullable=False, server_default="upload"))
     op.add_column("import_item", sa.Column("align_action", sa.String(16), nullable=False, server_default="new"))
     op.add_column("import_item", sa.Column("match_kid", sa.String(64)))
     op.add_column("knowledge", sa.Column("source_doc_id", sa.BigInteger, sa.ForeignKey("source_doc.id")))
@@ -109,5 +110,6 @@ def downgrade() -> None:
     op.drop_column("knowledge", "source_doc_id")
     op.drop_column("import_item", "match_kid")
     op.drop_column("import_item", "align_action")
+    op.drop_column("import_batch", "origin")
     op.drop_column("import_batch", "source_doc_id")
     op.drop_table("source_doc")

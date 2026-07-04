@@ -354,6 +354,68 @@ class TestImportPasteText:
         assert resp.status_code == 409
 
 
+class TestConfirmCreatesDoc:
+    async def _make_batch(self, app_client) -> dict:
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "doc_name": "确认建档", "text": FAQ_MD_OK},
+            cookies=await cookies_for("ou_member"),
+        )
+        return resp.json()
+
+    async def test_confirm_creates_source_doc(self, app_client, seeded, db_session):
+        from app.storage.pg.models import Knowledge, SourceDoc
+
+        batch = await self._make_batch(app_client)
+        resp = await app_client.post(
+            f"/api/imports/{batch['id']}/confirm",
+            json={"item_ids": [batch["items"][0]["id"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        body = resp.json()
+        assert body["source_doc_id"] is not None
+        doc = await db_session.get(SourceDoc, body["source_doc_id"])
+        assert doc.name == "确认建档" and doc.source == "manual"
+        kid = body["results"][0]["kid"]
+        row = await db_session.get(Knowledge, kid)
+        assert row.source_doc_id == doc.id and row.doc_seq == 1
+
+    async def test_upload_source_is_upload(self, app_client, seeded, db_session):
+        """file 通道建的文件 source='upload'。"""
+        from app.storage.pg.models import SourceDoc
+
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq"},
+            files={"file": ("faq.md", FAQ_MD_OK.encode(), "text/markdown")},
+            cookies=await cookies_for("ou_member"),
+        )
+        batch = resp.json()
+        resp = await app_client.post(
+            f"/api/imports/{batch['id']}/confirm",
+            json={"item_ids": [batch["items"][0]["id"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        doc = await db_session.get(SourceDoc, resp.json()["source_doc_id"])
+        assert doc.source == "upload"
+
+    async def test_confirm_name_conflict_409(self, app_client, seeded, db_session):
+        """并发同名兜底：上传预查后、confirm 建档前被人抢注同名文件 → 409。"""
+        from app.storage.pg.models import SourceDoc
+
+        batch = await self._make_batch(app_client)  # 预查时同名尚不存在
+        db_session.add(SourceDoc(name="确认建档", domain_code="free-order", type="faq",
+                                 source="manual", created_by="t"))
+        await db_session.commit()  # 模拟并发抢注，confirm 建档 flush 撞唯一约束
+        resp = await app_client.post(
+            f"/api/imports/{batch['id']}/confirm",
+            json={"item_ids": [batch["items"][0]["id"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "conflict"
+
+
 class TestTemplates:
     async def test_download_template(self, app_client, seeded):
         resp = await app_client.get(

@@ -479,7 +479,10 @@ async def upload_import(
     if dup.scalar_one_or_none() is not None:
         raise errors.conflict(f"知识文件「{name}」已存在")
 
-    batch = ImportBatch(domain_code=domain, type=type, file_name=name, created_by=user.user_id)
+    batch = ImportBatch(
+        domain_code=domain, type=type, file_name=name, created_by=user.user_id,
+        origin="manual" if text is not None else "upload",
+    )
     session.add(batch)
     await session.flush()
     items = []
@@ -570,22 +573,26 @@ async def confirm_import(
 ):
     batch, items = await _load_batch(session, user, batch_id)
     by_id = {i.id: i for i in items}
-    # 过渡实现（Task 5 会改为正式的 batch.source_doc_id 回填逻辑）：
-    # confirm 时按 (domain, file_name) 找或建一份 upload 文件承接本批次条目的归属。
-    doc = (
-        await session.execute(
-            select(SourceDoc).where(
-                SourceDoc.domain_code == batch.domain_code, SourceDoc.name == batch.file_name
-            )
-        )
-    ).scalar_one_or_none()
-    if doc is None:
+    # 首次导入才建档（批次维度）：已挂过文件的批次直接取用，不重复建档。
+    doc: SourceDoc | None = None
+    if batch.source_doc_id is None:
+        # rollback 会把 identity map 中所有对象置为 expired，之后同步访问
+        # batch 属性会触发 AsyncSession 惰性刷新（MissingGreenlet 500），
+        # 故 except 分支要用的属性先取局部变量
+        file_name = batch.file_name
         doc = SourceDoc(
-            name=batch.file_name, domain_code=batch.domain_code, type=batch.type,
-            source="upload", created_by=user.user_id,
+            name=file_name, domain_code=batch.domain_code, type=batch.type,
+            source=batch.origin, created_by=user.user_id,
         )
         session.add(doc)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError:  # 并发同名兜底（spec §6）
+            await session.rollback()
+            raise errors.conflict(f"知识文件「{file_name}」已存在")
+        batch.source_doc_id = doc.id
+    else:
+        doc = await session.get(SourceDoc, batch.source_doc_id)
     results = []
     for item_id in body.item_ids:
         item = by_id.get(item_id)
@@ -625,7 +632,7 @@ async def confirm_import(
         results.append({"item_id": item_id, "kid": result.kid, "error": None})
     batch.status = "confirmed"
     await session.commit()
-    return {"id": batch.id, "status": batch.status, "results": results}
+    return {"id": batch.id, "status": batch.status, "source_doc_id": batch.source_doc_id, "results": results}
 
 
 @router.get("/templates/{type_name}.md")
