@@ -182,7 +182,7 @@ export interface KnowledgeItem {
   expire_date: string
   updated_at: string
   hits_30d?: number
-  source_doc?: { id: number; name: string | null }
+  source_doc: { id: number; name: string | null }
 }
 
 export interface KnowledgeStats {

@@ -259,6 +259,69 @@ class TestConfirmUpdateBatch:
         # 索引删除恰好一次：第二次 confirm 不重复 delete
         assert viking_rec.deletes.count(f"viking://resources/free-order/faq/{row.kid}.md") == 1
 
+    async def test_confirm_after_doc_archived_conflict(self, app_client, seeded, db_session):
+        """整体下架文件后，该文件遗留的更新批次不可再确认（409），防止绕过归档写入新版本/新条目。"""
+        doc_id = await import_doc(app_client, "文件己")
+        preview = (
+            await app_client.post(
+                f"/api/source-docs/{doc_id}/update",
+                data={"text": FAQ_MD_OK},  # 「发货时间？」disappeared
+                cookies=await cookies_for("ou_member"),
+            )
+        ).json()
+        # 归档整份文件（含其下所有条目）
+        await app_client.post(
+            f"/api/source-docs/{doc_id}/offline", cookies=await cookies_for("ou_member")
+        )
+        resp = await app_client.post(
+            f"/api/imports/{preview['id']}/confirm",
+            json={"item_ids": [i["id"] for i in preview["items"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 409
+
+    async def test_confirm_changed_item_archived_meanwhile(self, app_client, seeded, db_session):
+        """更新批次中 changed 条目在 confirm 前被条目级下架（ARCHIVED），publish 内部状态迁移
+        非法（UPDATE_CONTENT 不接受 archived），需捕获 InvalidTransition 而非 500；
+        该条目 results 带 error，其余条目正常处理。"""
+        from app.storage.pg.models import Knowledge as K
+
+        doc_id = await import_doc(app_client, "文件庚")  # 两条：如何退款？/ 发货时间？
+        new_md = FAQ_MD_OK.replace("订单页申请。", "订单详情页申请。") + (
+            "\n# 新问题？\n\n## 标准问法\n新问题？\n\n## 相似问法\n- 新1\n- 新2\n\n"
+            "## 标准答案\n新答案。\n\n## 适用条件\n无\n"
+        )  # 「如何退款？」changed + 「新问题？」new + 「发货时间？」disappeared
+        preview = (
+            await app_client.post(
+                f"/api/source-docs/{doc_id}/update",
+                data={"text": new_md},
+                cookies=await cookies_for("ou_member"),
+            )
+        ).json()
+        changed_item = next(i for i in preview["items"] if i["align_action"] == "changed")
+        new_item = next(i for i in preview["items"] if i["align_action"] == "new")
+        target_kid = changed_item["match_kid"]
+        # 条目级下架 changed 条目对应的知识（不动文件本身）
+        archive_resp = await app_client.post(
+            f"/api/knowledge/{target_kid}/archive", cookies=await cookies_for("ou_member")
+        )
+        assert archive_resp.status_code == 200
+
+        resp = await app_client.post(
+            f"/api/imports/{preview['id']}/confirm",
+            json={"item_ids": [changed_item["id"], new_item["id"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+        results = {r["item_id"]: r for r in resp.json()["results"]}
+        assert results[changed_item["id"]]["error"]  # 非法迁移，error 非空
+        assert results[new_item["id"]]["error"] is None
+        assert results[new_item["id"]]["kid"]
+        new_row = (
+            await db_session.execute(select(K).where(K.title == "新问题？"))
+        ).scalars().one()
+        assert new_row.status == "published"  # 其余条目不受影响，正常处理
+
 
 class TestSourceDocOps:
     async def test_renew_all(self, app_client, seeded):

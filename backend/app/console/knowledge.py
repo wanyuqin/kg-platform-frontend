@@ -74,7 +74,10 @@ async def resolve_source_doc(
 ) -> SourceDoc:
     """表单/导入共用：取已有文件或新建 manual 文件；校验 domain/type/active。"""
     if source_doc_id is not None:
-        doc = await session.get(SourceDoc, source_doc_id)
+        # 对文件行加行锁：串行化同一文件下 next_doc_seq 的 max(doc_seq)+1 分配，
+        # 避免并发表单提交读到同一 max 值算出重复 doc_seq（新建文件的行本事务
+        # 独占无需加锁）
+        doc = await session.get(SourceDoc, source_doc_id, with_for_update=True)
         if doc is None or doc.domain_code != domain:
             raise errors.not_found()
         if doc.type != type_ or doc.status != "active":
@@ -400,7 +403,8 @@ async def patch_meta(
     if body.expire_date is not None:
         row.expire_date = body.expire_date
     await session.commit()
-    return _knowledge_out(row)
+    doc = await session.get(SourceDoc, row.source_doc_id) if row.source_doc_id else None
+    return _knowledge_out(row, doc.name if doc else None)
 
 
 @router.post("/knowledge/{kid}/archive")
@@ -515,6 +519,7 @@ def _batch_out(
         "type": batch.type,
         "file_name": batch.file_name,
         "status": batch.status,
+        "source_doc_id": batch.source_doc_id,
         "items": [
             {
                 "id": i.id,
@@ -625,6 +630,8 @@ async def confirm_import(
         doc = await session.get(SourceDoc, batch.source_doc_id)
         if doc is None:  # 防御性检查：理论不可达（当前无 source_doc 删除路径）
             raise errors.not_found()
+        if doc.status != "active":
+            raise errors.conflict("知识文件已归档，批次不可再确认")
     results = []
     pending_deletes: list[str] = []  # 归档条目的索引删除延后到 commit 后（与 archive_knowledge 同序）
     for item_id in body.item_ids:
@@ -683,6 +690,9 @@ async def confirm_import(
             results.append(
                 {"item_id": item_id, "kid": None, "error": f"与 {exc.existing_kid} 内容重复"}
             )
+            continue
+        except InvalidTransition:
+            results.append({"item_id": item_id, "kid": None, "error": "当前状态不允许更新"})
             continue
         item.result_kid = result.kid
         results.append({"item_id": item_id, "kid": result.kid, "error": None})

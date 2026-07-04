@@ -130,6 +130,10 @@ export default function ImportPreview() {
       message.warning('请先粘贴文本内容')
       return
     }
+    if (!isUpdateMode && !docName.trim()) {
+      message.warning('请先填写文件名')
+      return
+    }
     await submit({ text: pasteText })
   }
 
@@ -217,7 +221,7 @@ export default function ImportPreview() {
                 <Space direction="vertical" style={{ width: '100%' }} size={12}>
                   {!isUpdateMode && (
                     <Input
-                      placeholder="文件名（可选，用于知识文件列表展示）"
+                      placeholder="文件名（必填）"
                       value={docName}
                       onChange={(e) => setDocName(e.target.value)}
                       style={{ maxWidth: 400 }}
