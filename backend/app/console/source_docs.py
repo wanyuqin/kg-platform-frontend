@@ -1,13 +1,17 @@
 """知识文件（source_doc）查询与操作面（spec §4、§6）。"""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import errors
+from app.config import get_settings
 from app.console import auth
+from app.console.knowledge import _batch_out, run_pipeline
 from app.console.router_deps import current_user
 from app.domain.state_machine import Status
+from app.pipeline import parser
+from app.pipeline.align import ExistingEntry, align
 from app.storage.pg.models import (
     ConsoleUser,
     DomainMember,
@@ -189,3 +193,78 @@ async def source_doc_content(
         )
     ).scalars()
     return {"name": doc.name, "markdown": "\n\n".join(c.rstrip() + "\n" for c in rows)}
+
+
+@router.post("/source-docs/{doc_id}/update")
+async def update_source_doc(
+    doc_id: int,
+    text: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    user: ConsoleUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """更新知识文件：与新文本对齐，生成待确认批次预览（spec §5、§6）。"""
+    doc = await load_doc(session, user, doc_id)
+    if doc.status != "active":
+        raise errors.conflict("知识文件已归档，不可更新")
+    if (file is None) == (text is None):
+        raise errors.invalid_argument("file 与 text 必须二选一")
+    if file is not None:
+        raw = await file.read()
+        if len(raw) > get_settings().upload_max_mb * 1024 * 1024:
+            raise errors.invalid_argument(f"文件超过 {get_settings().upload_max_mb}MB 上限")
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise errors.invalid_argument("文件必须为 UTF-8 编码")
+    else:
+        content = text
+
+    rows = (
+        (
+            await session.execute(
+                select(Knowledge)
+                .where(
+                    Knowledge.source_doc_id == doc_id,
+                    Knowledge.status.notin_([Status.DRAFT, Status.ARCHIVED]),
+                )
+                .order_by(Knowledge.doc_seq)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing = [
+        ExistingEntry(
+            kid=r.kid, title=r.title, content_hash=r.content_hash,
+            is_form=r.source_ref.startswith("form:"),
+        )
+        for r in rows
+    ]
+    aligned = align(doc.type, content, existing)
+
+    batch = ImportBatch(
+        domain_code=doc.domain_code, type=doc.type, file_name=doc.name,
+        origin="manual" if text is not None else "upload",
+        source_doc_id=doc.id, created_by=user.user_id,
+    )
+    session.add(batch)
+    await session.flush()
+    items = []
+    for a in aligned:
+        if a.align_action == "disappeared":
+            validation, is_valid = [], True
+        else:
+            _, fields = parser.parse_sections(a.content)
+            validation, is_valid = run_pipeline(doc.type, fields)
+        items.append(
+            ImportItem(
+                batch_id=batch.id, seq=a.seq, title=a.title, content=a.content,
+                validation=validation, is_valid=is_valid,
+                align_action=a.align_action, match_kid=a.match_kid,
+            )
+        )
+    session.add_all(items)
+    await session.commit()
+    form_kids = {r.kid for r in rows if r.source_ref.startswith("form:")}
+    return _batch_out(batch, items, form_kids=form_kids)

@@ -506,7 +506,9 @@ async def upload_import(
     return _batch_out(batch, items)
 
 
-def _batch_out(batch: ImportBatch, items: list[ImportItem]) -> dict:
+def _batch_out(
+    batch: ImportBatch, items: list[ImportItem], form_kids: set[str] | None = None
+) -> dict:
     return {
         "id": batch.id,
         "domain": batch.domain_code,
@@ -523,11 +525,36 @@ def _batch_out(batch: ImportBatch, items: list[ImportItem]) -> dict:
                 "result_kid": i.result_kid,
                 # 线稿⑦：条目展开显示解析后字段预览（现算，不落库）
                 "fields": parser.parse_sections(i.content)[1],
+                # 更新对齐（Task 7）：批次预览带对齐结果，供前端展示徽标
+                "align_action": i.align_action,
+                "match_kid": i.match_kid,
+                "is_form": bool(
+                    i.align_action == "disappeared"
+                    and i.match_kid
+                    and form_kids
+                    and i.match_kid in form_kids
+                ),
             }
             for i in items
         ],
         "template_url": f"/api/templates/{batch.type}.md",  # 拒收提示引用（设计 3.1）
     }
+
+
+async def form_kids_of(session: AsyncSession, items: list[ImportItem]) -> set[str]:
+    """批次 disappeared 条目中源自表单录入（source_ref 前缀 form:）的 kid 集合。
+
+    供 _batch_out 计算 is_form；更新批次按 batch_id 重载预览时需重查库补算。
+    """
+    kids = [i.match_kid for i in items if i.align_action == "disappeared" and i.match_kid]
+    if not kids:
+        return set()
+    rows = (
+        await session.execute(
+            select(Knowledge.kid, Knowledge.source_ref).where(Knowledge.kid.in_(kids))
+        )
+    ).all()
+    return {kid for kid, ref in rows if ref.startswith("form:")}
 
 
 async def _load_batch(
@@ -556,7 +583,10 @@ async def preview_import(
     session: AsyncSession = Depends(get_session),
 ):
     batch, items = await _load_batch(session, user, batch_id)
-    return _batch_out(batch, items)
+    # 更新批次（挂了 source_doc_id）重载时补算表单来源集合，保持 is_form 与创建时一致；
+    # 首次导入批次无 disappeared 条目，不查（form_kids=None → 恒 False）
+    form_kids = await form_kids_of(session, items) if batch.source_doc_id is not None else None
+    return _batch_out(batch, items, form_kids=form_kids)
 
 
 class ConfirmBody(BaseModel):
