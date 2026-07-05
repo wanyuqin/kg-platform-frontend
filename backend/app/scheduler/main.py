@@ -18,47 +18,77 @@ from app.scheduler import jobs
 from app.storage.pg.session import get_session_factory
 from app.storage.viking.client import get_viking
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
 async def retry_failed_index() -> None:
     """index_state=failed 的知识重试写入 OpenViking，指数退避、最多 10 次（8.4）。"""
-    async with get_session_factory()() as session:
-        n = await jobs.retry_failed_index(session, get_viking())
-    if n:
-        logger.info("retry_failed_index: %d recovered", n)
+    logger.info("scheduler job start: retry_failed_index")
+    try:
+        async with get_session_factory()() as session:
+            n = await jobs.retry_failed_index(session, get_viking())
+        logger.info("scheduler job done: retry_failed_index recovered=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: retry_failed_index")
+        raise
 
 
 async def poll_indexing_ready() -> None:
     """indexing → ready 轮询（8.4，就绪判据见 PoC 结论）。"""
-    async with get_session_factory()() as session:
-        n = await jobs.poll_indexing_ready(session, get_viking())
-    if n:
-        logger.info("poll_indexing_ready: %d ready", n)
+    logger.info("scheduler job start: poll_indexing_ready")
+    try:
+        async with get_session_factory()() as session:
+            n = await jobs.poll_indexing_ready(session, get_viking())
+        logger.info("scheduler job done: poll_indexing_ready ready=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: poll_indexing_ready")
+        raise
 
 
 async def precreate_audit_partition() -> None:
     """每月 25 日预建下月 audit_log 分区（十一）。"""
-    async with get_session_factory()() as session:
-        name = await jobs.precreate_audit_partition(session, today=date.today())
-    logger.info("precreate_audit_partition: %s", name)
+    logger.info("scheduler job start: precreate_audit_partition")
+    try:
+        async with get_session_factory()() as session:
+            name = await jobs.precreate_audit_partition(session, today=date.today())
+        logger.info("scheduler job done: precreate_audit_partition partition=%s", name)
+    except Exception:
+        logger.exception("scheduler job failed: precreate_audit_partition")
+        raise
 
 
 async def drop_expired_audit_partition() -> None:
     """每日清理超过 KG_AUDIT_RETENTION_DAYS 的分区（十一）。"""
-    async with get_session_factory()() as session:
-        await jobs.drop_expired_audit_partitions(
-            session, today=date.today(), retention_days=get_settings().audit_retention_days
+    logger.info("scheduler job start: drop_expired_audit_partition")
+    try:
+        async with get_session_factory()() as session:
+            dropped = await jobs.drop_expired_audit_partitions(
+                session, today=date.today(), retention_days=get_settings().audit_retention_days
+            )
+        logger.info(
+            "scheduler job done: drop_expired_audit_partition dropped=%d names=%s",
+            len(dropped),
+            ",".join(dropped) if dropped else "-",
         )
+    except Exception:
+        logger.exception("scheduler job failed: drop_expired_audit_partition")
+        raise
 
 
 async def cleanup_stale_drafts() -> None:
     """每日清理超过 30 天未提交的草稿（ADR-0021）。"""
-    async with get_session_factory()() as session:
-        n = await jobs.cleanup_stale_drafts(session)
-    if n:
-        logger.info("cleanup_stale_drafts: %d deleted", n)
+    logger.info("scheduler job start: cleanup_stale_drafts")
+    try:
+        async with get_session_factory()() as session:
+            n = await jobs.cleanup_stale_drafts(session)
+        logger.info("scheduler job done: cleanup_stale_drafts deleted=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: cleanup_stale_drafts")
+        raise
 
 
 def build_scheduler() -> AsyncIOScheduler:
@@ -76,7 +106,10 @@ def build_scheduler() -> AsyncIOScheduler:
 
 
 async def _main() -> None:
-    build_scheduler().start()
+    scheduler = build_scheduler()
+    job_ids = ", ".join(j.id for j in scheduler.get_jobs())
+    logger.info("scheduler started: timezone=Asia/Shanghai jobs=[%s]", job_ids)
+    scheduler.start()
     await asyncio.Event().wait()  # 常驻
 
 

@@ -40,3 +40,24 @@ async def hits_last_30d(session: AsyncSession, kids: list[str]) -> dict[str, int
     for kid, n in search_rows:
         counts[kid] += n
     return dict(counts)
+
+
+async def key_usage_last_30d(
+    session: AsyncSession, key_ids: list[str]
+) -> dict[str, dict[str, int | str | None]]:
+    """近 30 天 API Key 调用量：按 key_id 聚合 count 与 last_used_at。"""
+    if not key_ids:
+        return {}
+    since = datetime.now(UTC) - timedelta(days=WINDOW_DAYS)
+    rows = await session.execute(
+        select(AuditLog.key_id, func.count(), func.max(AuditLog.ts))
+        .where(AuditLog.key_id.in_(key_ids), AuditLog.ts >= since)
+        .group_by(AuditLog.key_id)
+    )
+    return {
+        key_id: {
+            "calls_30d": n,
+            "last_used_at": last_ts.isoformat() if last_ts else None,
+        }
+        for key_id, n, last_ts in rows
+    }

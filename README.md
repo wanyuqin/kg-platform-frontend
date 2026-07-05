@@ -12,7 +12,7 @@
 ```
 backend/    Python + FastAPI：Gateway（/v1/*）+ 控制台 API（/api/*）+ 流水线 + scheduler
 frontend/   React + Antd 控制台（Vite）
-docker-compose.dev.yml   本地 PG + Redis（OpenViking 待 PoC 后补充）
+docker-compose.dev.yml   本地 PG + Redis + OpenViking + RocketMQ + MinIO（P2 基建见 backend/doc/local-dev-p2.md）
 ```
 
 ## 本地启动
@@ -25,11 +25,11 @@ docker-compose.dev.yml   本地 PG + Redis（OpenViking 待 PoC 后补充）
 
 脚本会自动：
 
-- 启动 Docker 中间件（PG + Redis + OpenViking）
+- 启动 Docker 中间件（PG + Redis + OpenViking + RocketMQ + MinIO）
 - 缺失时从示例文件复制 `backend/.env` 与 `openviking/ov.conf`
 - 执行 `uv sync` 与 Alembic 迁移
 - 缺失 `node_modules` 时执行 `npm install`
-- 并行启动后端 `:8000` 与前端 `:5173`
+- 并行启动后端 `:8000`、**scheduler**（索引就绪轮询）与前端 `:5173`
 
 常用开关：
 
@@ -37,13 +37,14 @@ docker-compose.dev.yml   本地 PG + Redis（OpenViking 待 PoC 后补充）
 START_DOCKER=0 ./scripts/dev.sh      # 不启动 Docker 中间件
 RUN_MIGRATIONS=0 ./scripts/dev.sh   # 跳过数据库迁移
 INSTALL_DEPS=0 ./scripts/dev.sh     # 跳过前端依赖安装检查
+START_SCHEDULER=0 ./scripts/dev.sh  # 不启动 scheduler
 BACKEND_PORT=8001 ./scripts/dev.sh  # 使用其他后端端口
 ```
 
 手动启动方式：
 
 ```bash
-# 1. 依赖中间件（PG + Redis + OpenViking，全部 Docker）
+# 1. 依赖中间件（PG + Redis + OpenViking + RocketMQ + MinIO，全部 Docker）
 cp openviking/ov.conf.example openviking/ov.conf   # 填入模型配置，见下节
 docker compose -f docker-compose.dev.yml up -d
 curl http://localhost:1933/health                  # OpenViking 就绪检查
@@ -54,7 +55,7 @@ cp .env.example .env
 uv sync
 uv run alembic upgrade head        # 建表（P1 全部 DDL + common 域种子数据）
 uv run uvicorn app.main:app --reload --port 8000
-# 另一终端（可选）：uv run python -m app.scheduler.main
+uv run python -m app.scheduler.main   # dev.sh 已自动启动；手动开发时需另开终端
 
 # 3. 前端
 cd frontend

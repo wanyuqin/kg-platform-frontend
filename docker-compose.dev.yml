@@ -1,4 +1,5 @@
 # 本地开发依赖（技术设计文档 13.1 集成测试环境）
+# P2 追加：RocketMQ（流水线/飞书事件/审核卡片）+ MinIO（飞书图片转存，S3 兼容）
 services:
   postgres:
     image: postgres:15
@@ -31,5 +32,76 @@ services:
       timeout: 3s
       retries: 5
 
+  # RocketMQ NameServer（ADR-0017：P2 接入；P1 进程不连，仅本地联调预置）
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.3.2
+    container_name: kg-rocketmq-namesrv
+    ports:
+      - "9876:9876"
+    command: sh mqnamesrv
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9876 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.2
+    container_name: kg-rocketmq-broker
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+      - "10912:10912"
+    volumes:
+      - ./docker/rocketmq/broker.conf:/home/rocketmq/rocketmq-5.3.2/conf/broker.conf
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+    command: sh mqbroker -n rocketmq-namesrv:9876 -c /home/rocketmq/rocketmq-5.3.2/conf/broker.conf
+    depends_on:
+      rocketmq-namesrv:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 10911 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 20s
+
+  # MinIO：本地 OSS 替身（飞书文档内图片转存，roadmap P2）
+  minio:
+    image: minio/minio:latest
+    container_name: kg-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: kgminio
+      MINIO_ROOT_PASSWORD: kgminio123
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 kgminio kgminio123 &&
+      mc mb -p local/kg-assets 2>/dev/null || true &&
+      mc anonymous set download local/kg-assets 2>/dev/null || true &&
+      echo 'MinIO bucket kg-assets ready'
+      "
+    restart: "no"
+
 volumes:
   pg_data:
+  minio_data:

@@ -7,9 +7,11 @@ FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 START_DOCKER="${START_DOCKER:-1}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
 INSTALL_DEPS="${INSTALL_DEPS:-auto}"
+START_SCHEDULER="${START_SCHEDULER:-1}"
 KG_DEV_LOGIN_ENABLED="${KG_DEV_LOGIN_ENABLED:-1}"
 
 BACKEND_PID=""
+SCHEDULER_PID=""
 FRONTEND_PID=""
 
 log() {
@@ -32,6 +34,11 @@ need_cmd() {
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
+
+  if [[ -n "${SCHEDULER_PID}" ]] && kill -0 "${SCHEDULER_PID}" >/dev/null 2>&1; then
+    log "Stopping scheduler (${SCHEDULER_PID})"
+    kill "${SCHEDULER_PID}" >/dev/null 2>&1 || true
+  fi
 
   if [[ -n "${FRONTEND_PID}" ]] && kill -0 "${FRONTEND_PID}" >/dev/null 2>&1; then
     log "Stopping frontend (${FRONTEND_PID})"
@@ -111,6 +118,16 @@ if [[ "${START_DOCKER}" != "0" && "${START_DOCKER}" != "false" ]]; then
   log "Starting Docker services"
   docker compose -f docker-compose.dev.yml up -d
   wait_for_url "http://localhost:1933/health" "OpenViking" 45 || warn "OpenViking health check did not pass yet; continuing because backend may still be useful."
+  if nc -z localhost 9876 2>/dev/null; then
+    log "RocketMQ NameServer is ready: localhost:9876"
+  else
+    warn "RocketMQ NameServer not reachable on :9876 yet (P2 only; P1 backend does not require it)."
+  fi
+  if curl -sf --max-time 2 "http://localhost:9000/minio/health/live" >/dev/null 2>&1; then
+    log "MinIO is ready: http://localhost:9000 (console :9001, bucket kg-assets)"
+  else
+    warn "MinIO health check did not pass yet (P2 only)."
+  fi
 else
   warn "Skipping Docker services because START_DOCKER=${START_DOCKER}"
 fi
@@ -145,6 +162,28 @@ else
   wait_for_url "http://localhost:${BACKEND_PORT}/healthz" "Backend" 30 || die "Backend did not become healthy."
 fi
 
+start_scheduler() {
+  if [[ "${START_SCHEDULER}" == "0" || "${START_SCHEDULER}" == "false" ]]; then
+    warn "Skipping scheduler because START_SCHEDULER=${START_SCHEDULER}"
+    return 0
+  fi
+
+  if pgrep -f "python -m app.scheduler.main" >/dev/null 2>&1 \
+    || pgrep -f "app.scheduler.main" >/dev/null 2>&1; then
+    warn "Scheduler already running; not starting a second instance."
+    return 0
+  fi
+
+  log "Starting scheduler (indexing→ready 轮询、写入重试)"
+  (
+    cd backend
+    uv run python -m app.scheduler.main
+  ) &
+  SCHEDULER_PID=$!
+}
+
+start_scheduler
+
 if port_in_use "${FRONTEND_PORT}"; then
   lsof -nP -iTCP:"${FRONTEND_PORT}" -sTCP:LISTEN || true
   die "Frontend port ${FRONTEND_PORT} is already in use. Stop it or set FRONTEND_PORT=another_port."
@@ -158,9 +197,10 @@ log "Starting frontend on http://localhost:${FRONTEND_PORT}"
 FRONTEND_PID=$!
 
 log "Local dev is starting."
-log "Frontend: http://localhost:${FRONTEND_PORT}"
-log "Backend:  http://localhost:${BACKEND_PORT}"
-log "Docs:     http://localhost:${BACKEND_PORT}/docs"
+log "Frontend:  http://localhost:${FRONTEND_PORT}"
+log "Backend:   http://localhost:${BACKEND_PORT}"
+log "Scheduler: ${SCHEDULER_PID:-（已跳过或复用已有进程）}"
+log "Docs:      http://localhost:${BACKEND_PORT}/docs"
 log "Dev login: http://localhost:${FRONTEND_PORT}/api/auth/dev-login?user_id=dev&platform_admin=true"
 log "Press Ctrl+C to stop services started by this script."
 
