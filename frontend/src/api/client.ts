@@ -178,11 +178,13 @@ export interface KnowledgeItem {
   source_type: string
   source_ref: string
   source_url: string | null
+  source: 'manual' | 'upload' | 'feishu' | null
+  source_title: string | null
   effective_date: string
   expire_date: string
   updated_at: string
   hits_30d?: number
-  source_doc: { id: number; name: string | null }
+  source_doc: { id: number; name: string | null; source: 'manual' | 'upload' | 'feishu' | null; title: string | null }
 }
 
 export interface KnowledgeStats {
@@ -204,6 +206,24 @@ export interface KnowledgeDetailOut extends KnowledgeItem {
   fields: Record<string, string>
   versions: { version: number; created_by: string; created_at: string; content_hash: string }[]
   hits_30d: number
+}
+
+/** 拉取指定类型的标准 Markdown 模板（GET /api/templates/{type}.md） */
+export async function fetchTemplate(type: string): Promise<string> {
+  const resp = await api.get(`/api/templates/${type}.md`, { responseType: 'text' })
+  return resp.data as string
+}
+
+/** 下载标准模板为本地 .md 文件 */
+export async function downloadTemplate(type: string): Promise<void> {
+  const content = await fetchTemplate(type)
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${type}-template.md`
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 /** 过期日期剩余天数；负数为已过期天数 */
@@ -233,6 +253,20 @@ export interface DomainItem {
   type_topk: Record<string, number>
   created_at: string
   stats?: { total: number; by_type: Record<string, number>; agents: number }
+}
+
+/** 知识域下拉选项：中文名称 + 技术标识 */
+export function domainSelectOption(d: Pick<DomainItem, 'code' | 'name'>) {
+  return { value: d.code, label: `${d.name}（${d.code}）` }
+}
+
+/** 按 code 解析知识域展示名；找不到时回退 code */
+export function domainDisplayLabel(
+  domains: Pick<DomainItem, 'code' | 'name'>[],
+  code: string,
+): string {
+  const hit = domains.find((d) => d.code === code)
+  return hit ? `${hit.name}（${hit.code}）` : code
 }
 
 export interface ImportItemOut {

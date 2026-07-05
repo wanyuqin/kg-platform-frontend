@@ -1,6 +1,6 @@
 """Markdown 解析与切分（技术设计文档 8.1；边界用例按 13.1 点名）。"""
 
-from app.pipeline.parser import parse_sections, split_entries
+from app.pipeline.parser import extract_frontmatter, parse_sections, split_entries
 
 FAQ_ONE = """# 企业版发票如何申请？
 
@@ -56,6 +56,28 @@ class TestSplitEntries:
     def test_blank_input_yields_no_entries(self):
         assert split_entries("") == []
         assert split_entries("   \n\n  ") == []
+
+
+class TestExtractFrontmatter:
+    def test_strips_source_url(self):
+        md = """---
+source_url: https://example.com/original
+---
+
+# 标题
+
+## 标准问法
+问什么？
+"""
+        meta, body = extract_frontmatter(md)
+        assert meta["source_url"] == "https://example.com/original"
+        assert body.startswith("# 标题")
+        assert len(split_entries(body)) == 1
+
+    def test_no_frontmatter(self):
+        meta, body = extract_frontmatter(FAQ_ONE)
+        assert meta == {}
+        assert body == FAQ_ONE
 
 
 class TestParseSections:

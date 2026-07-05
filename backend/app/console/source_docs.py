@@ -35,6 +35,7 @@ def _doc_out(doc: SourceDoc, total: int = 0, published: int = 0) -> dict:
     return {
         "id": doc.id,
         "name": doc.name,
+        "title": doc.source_title or doc.name,
         "domain": doc.domain_code,
         "type": doc.type,
         "source": doc.source,
@@ -225,6 +226,10 @@ async def update_source_doc(
     else:
         content = text
 
+    frontmatter, content = parser.extract_frontmatter(content)
+    file_source_url = frontmatter.get("source_url") or None
+    file_source_title = frontmatter.get("title") or None
+
     rows = (
         (
             await session.execute(
@@ -251,7 +256,9 @@ async def update_source_doc(
     batch = ImportBatch(
         domain_code=doc.domain_code, type=doc.type, file_name=doc.name,
         origin="manual" if text is not None else "upload",
-        source_doc_id=doc.id, created_by=user.user_id,
+        source_doc_id=doc.id, source_url=file_source_url or doc.source_url,
+        source_title=file_source_title or doc.source_title,
+        created_by=user.user_id,
     )
     session.add(batch)
     await session.flush()

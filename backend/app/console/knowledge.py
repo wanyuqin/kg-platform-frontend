@@ -21,6 +21,7 @@ from app.console import auth
 from app.console.router_deps import current_user
 from app.console.templates import TEMPLATES
 from app.domain.kid import KNOWLEDGE_TYPES
+from app.domain.source import resolve_source_title
 from app.domain.state_machine import Event, InvalidTransition, Status, transition
 from app.pipeline import parser, sensitive, validators
 from app.pipeline.publish import DuplicateContent, PublishInput, publish, save_draft
@@ -92,7 +93,7 @@ async def resolve_source_doc(
     if dup.scalar_one_or_none() is not None:
         raise errors.conflict(f"知识文件「{name}」已存在")
     doc = SourceDoc(name=name, domain_code=domain, type=type_, source="manual",
-                    created_by=user.user_id)
+                    source_title=name, created_by=user.user_id)
     session.add(doc)
     try:
         await session.flush()  # 拿 id，不提交（与条目同事务）
@@ -113,7 +114,8 @@ async def next_doc_seq(session: AsyncSession, doc_id: int) -> int:
     return cur.scalar_one() + 1
 
 
-def _knowledge_out(row: Knowledge, doc_name: str | None = None) -> dict:
+def _knowledge_out(row: Knowledge, doc: SourceDoc | None = None) -> dict:
+    doc_name = doc.name if doc else None
     return {
         "kid": row.kid,
         "title": row.title,
@@ -126,8 +128,15 @@ def _knowledge_out(row: Knowledge, doc_name: str | None = None) -> dict:
         "owner": row.owner_user_id,
         "source_type": row.source_type,
         "source_ref": row.source_ref,  # 线稿①溯源卡
-        "source_url": row.source_url,
-        "source_doc": {"id": row.source_doc_id, "name": doc_name},
+        "source_url": row.source_url or (doc.source_url if doc else None),
+        "source": doc.source if doc else None,
+        "source_title": resolve_source_title(doc),
+        "source_doc": {
+            "id": row.source_doc_id,
+            "name": doc_name,
+            "source": doc.source if doc else None,
+            "title": resolve_source_title(doc),
+        },
         "effective_date": row.effective_date.isoformat(),
         "expire_date": row.expire_date.isoformat(),
         "updated_at": row.updated_at.isoformat(),
@@ -149,6 +158,20 @@ class KnowledgeCreate(BaseModel):
     save_mode: str = Field(default="submit", pattern="^(draft|submit)$")
     source_doc_id: int | None = None
     new_doc_name: str | None = None
+    source_url: str | None = None
+
+
+def _resolve_source_url(
+    existing_row: Knowledge | None,
+    doc: SourceDoc,
+    batch_url: str | None,
+) -> str | None:
+    """条目 source_url：更新保留原值 > 批次 frontmatter > 文件级默认值。"""
+    if existing_row and existing_row.source_url:
+        return existing_row.source_url
+    if batch_url:
+        return batch_url
+    return doc.source_url
 
 
 def _to_input(body: KnowledgeCreate, user: ConsoleUser, doc: SourceDoc, doc_seq: int) -> PublishInput:
@@ -161,7 +184,7 @@ def _to_input(body: KnowledgeCreate, user: ConsoleUser, doc: SourceDoc, doc_seq:
         owner_user_id=body.owner or user.user_id,
         source_type="manual",
         source_ref=f"form:{user.user_id}",
-        source_url=None,
+        source_url=body.source_url or doc.source_url,
         effective_date=body.effective_date,
         expire_date=body.expire_date,
         actor_user_id=user.user_id,
@@ -252,16 +275,15 @@ async def list_knowledge(
     )
     hits = await hits_last_30d(session, [r.kid for r in rows])
     doc_ids = {r.source_doc_id for r in rows if r.source_doc_id is not None}
-    doc_names = dict(
-        (
-            await session.execute(
-                select(SourceDoc.id, SourceDoc.name).where(SourceDoc.id.in_(doc_ids))
-            )
-        ).all()
-    )
+    docs = {
+        d.id: d
+        for d in (
+            await session.execute(select(SourceDoc).where(SourceDoc.id.in_(doc_ids)))
+        ).scalars().all()
+    }
     return {
         "items": [
-            {**_knowledge_out(r, doc_names.get(r.source_doc_id)), "hits_30d": hits.get(r.kid, 0)}
+            {**_knowledge_out(r, docs.get(r.source_doc_id)), "hits_30d": hits.get(r.kid, 0)}
             for r in rows
         ],
         "page": page,
@@ -344,7 +366,7 @@ async def knowledge_detail(
     hits = await hits_last_30d(session, [kid])
     doc = await session.get(SourceDoc, row.source_doc_id) if row.source_doc_id else None
     return {
-        **_knowledge_out(row, doc.name if doc else None),
+        **_knowledge_out(row, doc),
         "hits_30d": hits.get(kid, 0),  # 线稿①底部治理信息条
         "content": current.content if current else "",
         "fields": (current.meta or {}).get("fields", {}) if current else {},
@@ -410,7 +432,7 @@ async def patch_meta(
         row.expire_date = body.expire_date
     await session.commit()
     doc = await session.get(SourceDoc, row.source_doc_id) if row.source_doc_id else None
-    return _knowledge_out(row, doc.name if doc else None)
+    return _knowledge_out(row, doc)
 
 
 @router.post("/knowledge/{kid}/archive")
@@ -482,6 +504,9 @@ async def upload_import(
         name = (doc_name or "").strip()
     if not name:
         raise errors.invalid_argument("必须提供 doc_name（知识文件名）")
+    frontmatter, content = parser.extract_frontmatter(content)
+    file_source_url = frontmatter.get("source_url") or None
+    file_source_title = frontmatter.get("title") or None
     # 同名预查（spec §6：第一步即报错；confirm 唯一约束兜底并发）
     dup = await session.execute(
         select(SourceDoc.id).where(SourceDoc.domain_code == domain, SourceDoc.name == name)
@@ -492,6 +517,8 @@ async def upload_import(
     batch = ImportBatch(
         domain_code=domain, type=type, file_name=name, created_by=user.user_id,
         origin="manual" if text is not None else "upload",
+        source_url=file_source_url,
+        source_title=file_source_title or name,
     )
     session.add(batch)
     await session.flush()
@@ -623,7 +650,9 @@ async def confirm_import(
         file_name = batch.file_name
         doc = SourceDoc(
             name=file_name, domain_code=batch.domain_code, type=batch.type,
-            source=batch.origin, created_by=user.user_id,
+            source=batch.origin, source_url=batch.source_url,
+            source_title=batch.source_title or file_name,
+            created_by=user.user_id,
         )
         session.add(doc)
         try:
@@ -638,6 +667,10 @@ async def confirm_import(
             raise errors.not_found()
         if doc.status != "active":
             raise errors.conflict("知识文件已归档，批次不可再确认")
+        if batch.source_url and not doc.source_url:
+            doc.source_url = batch.source_url
+        if batch.source_title:
+            doc.source_title = batch.source_title
     results = []
     pending_deletes: list[str] = []  # 归档条目的索引删除延后到 commit 后（与 archive_knowledge 同序）
     for item_id in body.item_ids:
@@ -683,7 +716,7 @@ async def confirm_import(
             owner_user_id=existing_row.owner_user_id if existing_row else user.user_id,
             source_type="markdown",
             source_ref=f"import:{batch.id}:{item.seq}",
-            source_url=None,
+            source_url=_resolve_source_url(existing_row, doc, batch.source_url),
             effective_date=date.today(),
             expire_date=None,
             actor_user_id=user.user_id,

@@ -115,7 +115,7 @@ async def seeded(db_session):
         ),
     )
     await db_session.commit()
-    return {"ok": ok.kid, "expired": expired.kid, "foreign": foreign.kid}
+    return {"ok": ok.kid, "expired": expired.kid, "foreign": foreign.kid, "doc_fo_id": doc_fo.id}
 
 
 @pytest.fixture
@@ -173,8 +173,48 @@ class TestRead:
         assert body["title"] == "企业版发票如何申请？"
         assert "## 标准答案" in body["content"]  # 来自 knowledge_version 快照（ADR-0018）
         assert body["source_url"] == "https://example.com/src"
+        assert body["source"] == "manual"
+        assert body["source_title"] == "免单FAQ文件"
+        assert body["source_doc"] == {
+            "id": seeded["doc_fo_id"],
+            "name": "免单FAQ文件",
+            "source": "manual",
+            "title": "免单FAQ文件",
+        }
         assert body["domain"] == "free-order" and body["type"] == "faq"
         assert body["version"] == 1
+
+    async def test_source_url_falls_back_to_source_doc(self, client, seeded, api_key, db_session):
+        """条目 source_url 为空时，回退到所属知识文件的 source_url。"""
+        from app.storage.pg.models import Knowledge, SourceDoc
+
+        row = await db_session.get(Knowledge, seeded["ok"])
+        doc = await db_session.get(SourceDoc, row.source_doc_id)
+        row.source_url = None
+        doc.source_url = "https://example.com/file-level"
+        await db_session.commit()
+
+        resp = await client.get(f"/v1/knowledge/{seeded['ok']}", headers=auth(api_key))
+        assert resp.status_code == 200
+        assert resp.json()["source_url"] == "https://example.com/file-level"
+
+    async def test_source_title_from_feishu_doc(self, client, seeded, api_key, db_session):
+        """飞书来源返回同步的文档标题（P2 写入 source_title）。"""
+        from app.storage.pg.models import Knowledge, SourceDoc
+
+        row = await db_session.get(Knowledge, seeded["ok"])
+        doc = await db_session.get(SourceDoc, row.source_doc_id)
+        doc.source = "feishu"
+        doc.name = "doccnXYZ"
+        doc.source_title = "免单活动 FAQ 手册"
+        doc.source_url = "https://feishu.cn/docx/doccnXYZ"
+        await db_session.commit()
+
+        resp = await client.get(f"/v1/knowledge/{seeded['ok']}", headers=auth(api_key))
+        body = resp.json()
+        assert body["source"] == "feishu"
+        assert body["source_title"] == "免单活动 FAQ 手册"
+        assert body["source_doc"]["title"] == "免单活动 FAQ 手册"
 
     async def test_404_unknown_kid(self, client, seeded, api_key):
         resp = await client.get("/v1/knowledge/faq-fo-9999", headers=auth(api_key))

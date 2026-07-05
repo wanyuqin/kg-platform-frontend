@@ -14,6 +14,21 @@ _FENCE = re.compile(r"^\s{0,3}(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _TRAILING_COLON = re.compile(r"[:：]\s*$")
 _ANY_SPACE = re.compile(r"[\s　]+")
+_FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
+_FM_KEY = re.compile(r"^([A-Za-z0-9_-]+)\s*:\s*(.*)$")
+
+
+def extract_frontmatter(markdown: str) -> tuple[dict[str, str], str]:
+    """剥离文件级 YAML frontmatter（导入 source_url / title 等元数据用）。"""
+    m = _FRONTMATTER.match(markdown)
+    if not m:
+        return {}, markdown
+    meta: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        kv = _FM_KEY.match(line.strip())
+        if kv:
+            meta[kv.group(1)] = kv.group(2).strip()
+    return meta, markdown[m.end() :]
 
 
 def _clean_name(raw: str) -> str:

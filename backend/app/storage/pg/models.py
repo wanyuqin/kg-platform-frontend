@@ -138,6 +138,8 @@ class SourceDoc(Base):
     domain_code: Mapped[str] = mapped_column(String(32), ForeignKey("domain.code"))
     type: Mapped[str] = mapped_column(String(16))
     source: Mapped[str] = mapped_column(String(16))
+    source_url: Mapped[str | None] = mapped_column(String(1024))
+    source_title: Mapped[str | None] = mapped_column(String(256))  # 原文标题；飞书=P2 文档名
     status: Mapped[str] = mapped_column(String(16), server_default=text("'active'"))
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
@@ -159,6 +161,8 @@ class ImportBatch(Base):
     status: Mapped[str] = mapped_column(String(16), server_default=text("'previewing'"))
     source_doc_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("source_doc.id"))
     origin: Mapped[str] = mapped_column(String(16), server_default=text("'upload'"))
+    source_url: Mapped[str | None] = mapped_column(String(1024))
+    source_title: Mapped[str | None] = mapped_column(String(256))
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
 

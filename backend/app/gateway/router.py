@@ -19,8 +19,9 @@ from app import errors
 from app.audit import writer
 from app.config import get_settings
 from app.domain.kid import KNOWLEDGE_TYPES
+from app.domain.source import resolve_source_title
 from app.gateway.auth import AuthContext, authenticate
-from app.storage.pg.models import Domain, Knowledge, KnowledgeVersion
+from app.storage.pg.models import Domain, Knowledge, KnowledgeVersion, SourceDoc
 from app.storage.pg.session import get_session
 from app.storage.redis.rate_limit import check_rate_limit
 from app.storage.viking.client import VikingClient, VikingError, get_viking
@@ -195,6 +196,8 @@ async def get_knowledge(
             )
         )
     ).scalar_one()
+    doc = await session.get(SourceDoc, row.source_doc_id)
+    source_url = row.source_url or (doc.source_url if doc else None)
     _audit(
         {
             "key_id": ctx.key_id,
@@ -212,7 +215,17 @@ async def get_knowledge(
         "tags": row.tags,
         "version": row.version,
         "content": snap.content,  # PG 快照，不回源 OpenViking（ADR-0018）
-        "source_url": row.source_url,
+        "source": doc.source if doc else None,  # manual | upload | feishu
+        "source_title": resolve_source_title(doc),
+        "source_url": source_url,
+        "source_doc": {
+            "id": doc.id,
+            "name": doc.name,
+            "source": doc.source,
+            "title": resolve_source_title(doc),
+        }
+        if doc
+        else None,
         "effective_date": row.effective_date.isoformat(),
         "expire_date": row.expire_date.isoformat(),
         "updated_at": row.updated_at.isoformat(),

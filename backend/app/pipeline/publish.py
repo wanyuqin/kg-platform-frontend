@@ -219,7 +219,8 @@ async def publish(
             version = row.version if event == Event.SUBMIT_PASS else row.version + 1
             row.title = inp.title
             row.tags = inp.tags
-            row.source_url = inp.source_url
+            if inp.source_url is not None:
+                row.source_url = inp.source_url
             row.owner_user_id = inp.owner_user_id
             row.version = version
             row.status = status

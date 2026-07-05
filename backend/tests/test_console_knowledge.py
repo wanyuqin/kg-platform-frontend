@@ -380,6 +380,52 @@ class TestConfirmCreatesDoc:
         row = await db_session.get(Knowledge, kid)
         assert row.source_doc_id == doc.id and row.doc_seq == 1
 
+    async def test_import_frontmatter_sets_source_url(self, app_client, seeded, db_session):
+        from app.storage.pg.models import Knowledge, SourceDoc
+
+        md = """---
+source_url: https://example.com/faq-source
+---
+""" + FAQ_MD_OK
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "doc_name": "带链接FAQ", "text": md},
+            cookies=await cookies_for("ou_member"),
+        )
+        batch = resp.json()
+        confirm = await app_client.post(
+            f"/api/imports/{batch['id']}/confirm",
+            json={"item_ids": [batch["items"][0]["id"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        doc = await db_session.get(SourceDoc, confirm.json()["source_doc_id"])
+        kid = confirm.json()["results"][0]["kid"]
+        row = await db_session.get(Knowledge, kid)
+        assert doc.source_url == "https://example.com/faq-source"
+        assert row.source_url == "https://example.com/faq-source"
+
+    async def test_import_frontmatter_sets_source_title(self, app_client, seeded, db_session):
+        from app.storage.pg.models import SourceDoc
+
+        md = """---
+title: 免单 FAQ 规范文档
+---
+""" + FAQ_MD_OK
+        resp = await app_client.post(
+            "/api/imports",
+            data={"domain": "free-order", "type": "faq", "doc_name": "faq-conform.md", "text": md},
+            cookies=await cookies_for("ou_member"),
+        )
+        batch = resp.json()
+        confirm = await app_client.post(
+            f"/api/imports/{batch['id']}/confirm",
+            json={"item_ids": [batch["items"][0]["id"]]},
+            cookies=await cookies_for("ou_member"),
+        )
+        doc = await db_session.get(SourceDoc, confirm.json()["source_doc_id"])
+        assert doc.name == "faq-conform.md"
+        assert doc.source_title == "免单 FAQ 规范文档"
+
     async def test_upload_source_is_upload(self, app_client, seeded, db_session):
         """file 通道建的文件 source='upload'。"""
         from app.storage.pg.models import SourceDoc
