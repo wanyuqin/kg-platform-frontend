@@ -39,12 +39,6 @@ services:
     ports:
       - "9876:9876"
     command: sh mqnamesrv
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 9876 || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
 
   rocketmq-broker:
     image: apache/rocketmq:5.3.2
@@ -59,14 +53,7 @@ services:
       NAMESRV_ADDR: rocketmq-namesrv:9876
     command: sh mqbroker -n rocketmq-namesrv:9876 -c /home/rocketmq/rocketmq-5.3.2/conf/broker.conf
     depends_on:
-      rocketmq-namesrv:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 10911 || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 15
-      start_period: 20s
+      - rocketmq-namesrv
 
   # MinIO：本地 OSS 替身（飞书文档内图片转存，roadmap P2）
   minio:
