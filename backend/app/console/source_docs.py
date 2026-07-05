@@ -39,7 +39,7 @@ def _doc_out(
     index_indexing: int = 0,
     index_failed: int = 0,
 ) -> dict:
-    return {
+    out = {
         "id": doc.id,
         "name": doc.name,
         "title": doc.source_title or doc.name,
@@ -54,6 +54,10 @@ def _doc_out(
         "index_failed": index_failed,
         "updated_at": doc.updated_at.isoformat(),
     }
+    if doc.source == "feishu":
+        out["sync_status"] = doc.sync_status
+        out["feishu_url"] = doc.feishu_url
+    return out
 
 
 async def load_doc(

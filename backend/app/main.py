@@ -20,6 +20,18 @@ from app.storage.redis.client import get_redis
 logger = logging.getLogger(__name__)
 
 
+def _configure_logging() -> None:
+    """确保 app.* 日志在 uvicorn 控制台可见（与 scheduler 一致）。"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
+
+_configure_logging()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """审计消费协程随进程起停（技术 十一）；shutdown 时清尾一次（尽力而为）。"""

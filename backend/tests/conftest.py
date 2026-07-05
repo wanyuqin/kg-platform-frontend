@@ -12,6 +12,7 @@ import os
 TEST_DB = "kg_test"
 TEST_DB_URL = f"postgresql+asyncpg://kg:kg@localhost:5433/{TEST_DB}"
 os.environ["KG_DATABASE_URL"] = TEST_DB_URL
+os.environ["KG_FEISHU_MQ_BACKEND"] = "memory"
 
 import json  # noqa: E402  环境变量必须先于 app 模块导入生效
 

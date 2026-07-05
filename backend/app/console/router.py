@@ -12,15 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import errors
 from app.config import get_settings
-from app.console import admin, auth, knowledge, source_docs
+from app.console import admin, auth, feishu_sync, knowledge, review, source_docs
 from app.console.router_deps import current_user
 from app.storage.pg.models import ConsoleUser
 from app.storage.pg.session import get_session
 
 router = APIRouter(prefix="/api", tags=["console"])
+router.include_router(feishu_sync.router)
 router.include_router(admin.router)
 router.include_router(knowledge.router)
 router.include_router(source_docs.router)
+router.include_router(review.router)
 
 
 @router.get("/auth/login")

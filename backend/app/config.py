@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     lark_app_id: str = ""
     lark_app_secret: str = ""
+    lark_encrypt_key: str = ""  # 飞书事件订阅 Encrypt Key
+    lark_verification_token: str = ""  # 飞书事件订阅 Verification Token
     session_ttl_hours: int = 12
     dev_login_enabled: bool = False  # KG_DEV_LOGIN_ENABLED：本地联调登录后门，生产严禁开启
 
@@ -25,7 +27,7 @@ class Settings(BaseSettings):
     upload_max_mb: int = 2
     audit_retention_days: int = 180
 
-    # P2 基建（本地 docker-compose.dev.yml 默认值；P1 进程可不连）
+    # P2 基建（本地 docker-compose.dev.yml 默认值）
     rocketmq_namesrv: str = "localhost:9876"
     rocketmq_topic_pipeline: str = "kg.pipeline"
     rocketmq_topic_feishu_event: str = "kg.feishu.event"
@@ -36,6 +38,18 @@ class Settings(BaseSettings):
     oss_secret_key: str = "kgminio123"
     oss_bucket: str = "kg-assets"
     oss_region: str = "us-east-1"  # MinIO 占位，SDK 必填
+    oss_public_base_url: str = "http://localhost:9000/kg-assets"  # 转存图片对外 URL 前缀
+
+    feishu_poll_interval_sec: int = 300  # 轮询兜底间隔（秒，ADR-0015）
+    feishu_block_qps: float = 3.0
+    feishu_media_qps: float = 5.0
+    feishu_auth_poll_interval_sec: int = 60
+    feishu_auth_timeout_hours: int = 24
+    feishu_archived_retention_days: int = 30
+    rocketmq_topic_feishu_event_dlq: str = "kg.feishu.event.dlq"
+    rocketmq_consumer_group_feishu: str = "kg_feishu_consumer"
+    feishu_consumer_workers: int = 2
+    feishu_mq_backend: str = "memory"  # memory | rocketmq
 
     @property
     def alembic_database_url(self) -> str:

@@ -141,6 +141,16 @@ class SourceDoc(Base):
     source_url: Mapped[str | None] = mapped_column(String(1024))
     source_title: Mapped[str | None] = mapped_column(String(256))  # 原文标题；飞书=P2 文档名
     status: Mapped[str] = mapped_column(String(16), server_default=text("'active'"))
+    feishu_doc_token: Mapped[str | None] = mapped_column(String(128))
+    feishu_doc_type: Mapped[str | None] = mapped_column(String(16))
+    feishu_url: Mapped[str | None] = mapped_column(String(1024))
+    sync_status: Mapped[str] = mapped_column(String(32), server_default=text("'pending'"))
+    last_sync_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_sync_error: Mapped[str | None] = mapped_column(Text)
+    last_sync_error_detail: Mapped[dict | None] = mapped_column(JSONB)
+    sync_interval_sec: Mapped[int | None] = mapped_column(Integer)
+    archived_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    awaiting_auth_since: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
@@ -148,6 +158,12 @@ class SourceDoc(Base):
         UniqueConstraint("domain_code", "name"),
         CheckConstraint("source IN ('manual','upload','feishu')"),
         CheckConstraint("status IN ('active','archived')"),
+        CheckConstraint("feishu_doc_type IS NULL OR feishu_doc_type IN ('docx','wiki','doc')"),
+        CheckConstraint(
+            "sync_status IN ('pending','syncing','success','failed',"
+            "'awaiting_auth','permission_revoked','auth_timeout','archived')"
+        ),
+        CheckConstraint("sync_interval_sec IS NULL OR sync_interval_sec > 0"),
     )
 
 
@@ -250,11 +266,43 @@ class SyncState(Base):
     last_event_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     last_poll_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     next_poll_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_auth_check_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(512))
+    last_error_detail: Mapped[dict | None] = mapped_column(JSONB)
+    last_block_ids: Mapped[list | None] = mapped_column(JSONB)
+    last_sync_started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     registered_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
     __table_args__ = (
         CheckConstraint("feishu_doc_type IN ('docx','wiki','doc')"),
-        CheckConstraint("sync_status IN ('registered','syncing','idle','error','quarantine')"),
+        CheckConstraint("sync_status IN ('registered','syncing','idle','error','quarantine','archived')"),
+    )
+
+
+class VikingCleanupFailed(Base):
+    """OpenViking 删除失败待重试（feishu archive purge / disappeared）。"""
+
+    __tablename__ = "viking_cleanup_failed"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    uri: Mapped[str] = mapped_column(String(512), unique=True)
+    last_error: Mapped[str] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    next_retry_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+
+
+class FeishuSyncReceipt(Base):
+    """飞书 MQ 消费幂等收据（feishu-sync §11.2）。"""
+
+    __tablename__ = "feishu_sync_receipt"
+
+    source_doc_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("source_doc.id"), primary_key=True)
+    content_hash: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
+    triggered_by: Mapped[str] = mapped_column(String(16))
+    processed_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+    __table_args__ = (
+        CheckConstraint("triggered_by IN ('event','poll','manual','bind')"),
     )

@@ -30,7 +30,23 @@ curl -sf http://localhost:9000/minio/health/live
 open http://localhost:9001   # 账号 kgminio / kgminio123
 ```
 
-环境变量见 `backend/.env.example` 中 `KG_ROCKETMQ_*` 与 `KG_OSS_*`。P1 后端进程**不连接** MQ/OSS 亦可正常运行；P2 联调时再接入客户端。
+环境变量见 `backend/.env.example`（或已复制的 `backend/.env`）：
+
+| 分组 | 变量 | 本地默认值 |
+|-|-|-|
+| RocketMQ | `KG_ROCKETMQ_NAMESRV` | `localhost:9876` |
+| | `KG_ROCKETMQ_TOPIC_PIPELINE` | `kg.pipeline` |
+| | `KG_ROCKETMQ_TOPIC_FEISHU_EVENT` | `kg.feishu.event` |
+| | `KG_ROCKETMQ_TOPIC_REVIEW_CARD` | `kg.review.card` |
+| OSS | `KG_OSS_ENDPOINT` | `http://localhost:9000` |
+| | `KG_OSS_ACCESS_KEY` / `KG_OSS_SECRET_KEY` | `kgminio` / `kgminio123` |
+| | `KG_OSS_BUCKET` | `kg-assets` |
+| | `KG_OSS_PUBLIC_BASE_URL` | `http://localhost:9000/kg-assets` |
+| 飞书 | `KG_LARK_APP_ID` / `KG_LARK_APP_SECRET` | 开放平台凭证 |
+| | `KG_LARK_ENCRYPT_KEY` / `KG_LARK_VERIFICATION_TOKEN` | 事件订阅（ngrok 联调时填） |
+| 同步 | `KG_FEISHU_POLL_INTERVAL_SEC` | `300` |
+
+P1 后端进程**不连接** MQ/OSS 亦可正常运行；P2 联调时 `Settings` 已装配上述字段。
 
 ### RocketMQ Topic（P2 业务接入时创建）
 

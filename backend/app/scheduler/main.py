@@ -14,7 +14,7 @@ from datetime import date
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import get_settings
-from app.scheduler import jobs
+from app.scheduler import feishu_archive_cleanup, feishu_auth_poll, feishu_poll, jobs, viking_cleanup_retry
 from app.storage.pg.session import get_session_factory
 from app.storage.viking.client import get_viking
 
@@ -79,6 +79,60 @@ async def drop_expired_audit_partition() -> None:
         raise
 
 
+async def poll_feishu_docs() -> None:
+    """飞书文档轮询兜底（feishu-sync §9）。"""
+    logger.info("scheduler job start: poll_feishu_docs")
+    try:
+        async with get_session_factory()() as session:
+            n = await feishu_poll.feishu_poll_tick(session)
+            await session.commit()
+        logger.info("scheduler job done: poll_feishu_docs started=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: poll_feishu_docs")
+        raise
+
+
+async def poll_feishu_auth() -> None:
+    """飞书授权等待轮询 + 24h 超时（feishu-sync §4.5）。"""
+    logger.info("scheduler job start: poll_feishu_auth")
+    try:
+        async with get_session_factory()() as session:
+            n = await feishu_auth_poll.feishu_auth_poll_tick(session)
+            await session.commit()
+        logger.info("scheduler job done: poll_feishu_auth recovered=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: poll_feishu_auth")
+        raise
+
+
+async def purge_feishu_archives() -> None:
+    """飞书归档超 30 天物理清理条目（feishu-sync D6）。"""
+    logger.info("scheduler job start: purge_feishu_archives")
+    try:
+        async with get_session_factory()() as session:
+            n = await feishu_archive_cleanup.purge_expired_feishu_archives(
+                session, get_viking()
+            )
+            await session.commit()
+        logger.info("scheduler job done: purge_feishu_archives purged=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: purge_feishu_archives")
+        raise
+
+
+async def retry_viking_cleanup_failed() -> None:
+    """重试 OpenViking 删除失败记录（archive purge 兜底）。"""
+    logger.info("scheduler job start: retry_viking_cleanup_failed")
+    try:
+        async with get_session_factory()() as session:
+            n = await viking_cleanup_retry.retry_viking_cleanup_failed(session, get_viking())
+            await session.commit()
+        logger.info("scheduler job done: retry_viking_cleanup_failed recovered=%d", n)
+    except Exception:
+        logger.exception("scheduler job failed: retry_viking_cleanup_failed")
+        raise
+
+
 async def cleanup_stale_drafts() -> None:
     """每日清理超过 30 天未提交的草稿（ADR-0021）。"""
     logger.info("scheduler job start: cleanup_stale_drafts")
@@ -102,6 +156,14 @@ def build_scheduler() -> AsyncIOScheduler:
         drop_expired_audit_partition, "cron", hour=4, id="drop_expired_audit_partition"
     )
     scheduler.add_job(cleanup_stale_drafts, "cron", hour=4, minute=30, id="cleanup_stale_drafts")
+    poll_sec = get_settings().feishu_poll_interval_sec
+    scheduler.add_job(poll_feishu_docs, "interval", seconds=poll_sec, id="poll_feishu_docs")
+    auth_sec = get_settings().feishu_auth_poll_interval_sec
+    scheduler.add_job(poll_feishu_auth, "interval", seconds=auth_sec, id="poll_feishu_auth")
+    scheduler.add_job(purge_feishu_archives, "cron", hour=5, id="purge_feishu_archives")
+    scheduler.add_job(
+        retry_viking_cleanup_failed, "interval", hours=6, id="retry_viking_cleanup_failed"
+    )
     return scheduler
 
 
