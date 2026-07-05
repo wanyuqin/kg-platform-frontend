@@ -21,3 +21,4 @@ openviking/workspace/
 # ts build cache
 *.tsbuildinfo
 .superpowers/
+.worktrees/
