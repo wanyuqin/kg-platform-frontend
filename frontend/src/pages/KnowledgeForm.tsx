@@ -27,6 +27,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import {
   api,
+  domainDisplayLabel,
+  domainSelectOption,
   DomainItem,
   KNOWLEDGE_TYPES,
   SourceDocItem,
@@ -41,10 +43,12 @@ export default function KnowledgeForm() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const editKid = searchParams.get('edit')
+  const domainFromList = searchParams.get('domain') ?? undefined
+  const domainLocked = !!domainFromList && !editKid
   const [form] = Form.useForm()
   const [step, setStep] = useState(editKid ? 1 : 0)
   const [domains, setDomains] = useState<DomainItem[]>([])
-  const [domain, setDomain] = useState<string>()
+  const [domain, setDomain] = useState<string | undefined>(domainFromList)
   const [type, setType] = useState<string>()
   const [validation, setValidation] = useState<ValidationFinding[]>([])
   const [checking, setChecking] = useState(false)
@@ -55,8 +59,13 @@ export default function KnowledgeForm() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
-    api.get('/api/domains/mine').then((resp) => setDomains(resp.data.items))
-  }, [])
+    api.get('/api/domains/mine').then((resp) => {
+      setDomains(resp.data.items)
+      if (domainFromList) {
+        setDomain(domainFromList)
+      }
+    })
+  }, [domainFromList])
 
   useEffect(() => {
     if (!editKid) return
@@ -182,20 +191,30 @@ export default function KnowledgeForm() {
       <Steps
         current={step}
         style={{ maxWidth: 720, marginBottom: 32 }}
-        items={[{ title: '选择 domain 与类型' }, { title: '填写内容' }, { title: '提交' }]}
+        items={[
+          { title: domainLocked ? '选择知识类型' : '选择知识域与类型' },
+          { title: '填写内容' },
+          { title: '提交' },
+        ]}
       />
 
       {step === 0 && (
         <Form layout="vertical" style={{ maxWidth: 480 }}>
-          <Form.Item label="domain（仅列出有权限的 domain）" required>
-            <Select
-              value={domain}
-              onChange={setDomain}
-              options={domains
-                .filter((d) => d.code !== 'common')
-                .map((d) => ({ value: d.code, label: `${d.code}（${d.name}）` }))}
-              placeholder="选择知识域"
-            />
+          <Form.Item label="知识域" required>
+            {domainLocked ? (
+              <Typography.Text>
+                {domain ? domainDisplayLabel(domains, domain) : domainFromList}
+              </Typography.Text>
+            ) : (
+              <Select
+                value={domain}
+                onChange={setDomain}
+                options={domains
+                  .filter((d) => d.code !== 'common')
+                  .map(domainSelectOption)}
+                placeholder="选择知识域"
+              />
+            )}
           </Form.Item>
           <Form.Item label="知识类型" required>
             <Select
@@ -215,7 +234,8 @@ export default function KnowledgeForm() {
         <Row gutter={24}>
           <Col span={14}>
             <Typography.Text type="secondary">
-              domain：{domain} ｜ 类型：{KNOWLEDGE_TYPES.find((t) => t.value === type)?.label}
+              知识域：{domain ? domainDisplayLabel(domains, domain) : '—'} ｜ 类型：
+              {KNOWLEDGE_TYPES.find((t) => t.value === type)?.label}
             </Typography.Text>
             <Divider style={{ margin: '12px 0' }} />
             <Form form={form} layout="vertical" onValuesChange={revalidate}>
@@ -236,7 +256,7 @@ export default function KnowledgeForm() {
                       rules={[{ required: !newDoc, message: '请选择所属知识文件' }]}
                     >
                       <Select
-                        placeholder="选择该 domain+类型 下的知识文件"
+                        placeholder="选择该知识域与类型下的知识文件"
                         options={sourceDocs.map((d) => ({ value: d.id, label: d.name }))}
                       />
                     </Form.Item>

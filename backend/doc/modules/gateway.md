@@ -3,11 +3,18 @@
 > **溯源**：技术设计文档 六、九（降级）、十（鉴权限流）；设计文档 六
 > **代码入口**：`app/gateway/`
 > **关联 ADR**：ADR-0001、ADR-0011、ADR-0012、ADR-0013、ADR-0014、ADR-0018
-> **最后同步**：2026-07-04
+> **最后同步**：2026-07-05
 
 ## 职责边界
 
 Agent 侧唯一入口，完全封装 OpenViking（ADR-0001）。P1 只有两个接口：`POST /v1/search` 与 `GET /v1/knowledge/{kid}`；MCP Server 为 P2，作为 HTTP 的薄封装挂载在本模块（ADR-0014）。
+
+## Agent 鉴权与多域访问
+
+- 每个 Agent 持**一把** API Key（`Authorization: Bearer kp_{key_id}_{secret}`），Key 绑定 `domain_whitelist`（domain code 数组）。
+- 鉴权时自动并入 `common` 域；search 将白名单映射为 `viking://resources/{domain}/` 前缀集合，单次请求跨全部授权域检索。
+- read 按 kid 所属 domain 校验是否在白名单内；越权统一 404（ADR-0013）。
+- 上游只需配置单一 `KG_API_KEY`，无需按 domain 拆分多把 Key。
 
 ## 通用约定
 

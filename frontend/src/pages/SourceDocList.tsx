@@ -1,8 +1,32 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Input, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { Button, Card, Input, Popconfirm, Progress, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
-import { api, DomainItem, SOURCE_LABEL, SourceDocItem, TYPE_COLOR } from '../api/client'
+import { api, domainSelectOption, DomainItem, SOURCE_LABEL, SourceDocItem, TYPE_COLOR } from '../api/client'
+
+function IndexProgressCell({ r }: { r: SourceDocItem }) {
+  const { entry_published, index_ready, index_indexing, index_failed } = r
+  if (entry_published === 0) {
+    return <Typography.Text type="secondary">—</Typography.Text>
+  }
+  const percent = Math.round((index_ready / entry_published) * 100)
+  const hasFailed = index_failed > 0 && index_ready < entry_published
+  const status = index_indexing > 0 ? 'active' : hasFailed ? 'exception' : 'success'
+  const parts = [`${index_ready}/${entry_published} 已索引`]
+  if (index_indexing > 0) parts.push(`${index_indexing} 索引中`)
+  if (index_failed > 0) parts.push(`${index_failed} 失败`)
+
+  return (
+    <Tooltip title={`在架/总量：${r.entry_published}/${r.entry_total}`}>
+      <div style={{ minWidth: 160 }}>
+        <Progress percent={percent} size="small" status={status} showInfo={false} />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {parts.join(' · ')}
+        </Typography.Text>
+      </div>
+    </Tooltip>
+  )
+}
 
 // 知识文件列表（spec §4.2）：domain → 文件 → 条目 的中间层视图
 export default function SourceDocList() {
@@ -13,6 +37,8 @@ export default function SourceDocList() {
   const [status, setStatus] = useState<string>()
   const [q, setQ] = useState('')
   const [items, setItems] = useState<SourceDocItem[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
@@ -29,15 +55,19 @@ export default function SourceDocList() {
     if (!domain) return
     setLoading(true)
     api
-      .get('/api/source-docs', { params: { domain, status, q: q || undefined } })
-      .then((resp) => setItems(resp.data.items))
+      .get('/api/source-docs', { params: { domain, status, q: q || undefined, page, page_size: 20 } })
+      .then((resp) => {
+        setItems(resp.data.items)
+        setTotal(resp.data.total)
+      })
       .finally(() => setLoading(false))
-  }, [domain, status, q])
+  }, [domain, status, q, page])
 
   useEffect(load, [load])
 
   const selectDomain = (value: string) => {
     setDomain(value)
+    setPage(1)
     setSearchParams({ domain: value })
   }
 
@@ -65,10 +95,10 @@ export default function SourceDocList() {
         <Space>
           知识文件
           <Select
-            style={{ width: 180 }}
+            style={{ width: 280 }}
             value={domain}
             onChange={selectDomain}
-            options={domains.map((d) => ({ value: d.code, label: d.code }))}
+            options={domains.map(domainSelectOption)}
           />
           <Typography.Text type="secondary" style={{ fontWeight: 'normal', fontSize: 13 }}>
             点击文件进入该文件的知识条目列表
@@ -76,9 +106,27 @@ export default function SourceDocList() {
         </Space>
       }
       extra={
-        <Button type="primary" onClick={() => navigate('/knowledge/import')}>
-          + 新建（粘贴 / 上传）
-        </Button>
+        <Space>
+          <Button
+            type="primary"
+            onClick={() =>
+              navigate(
+                `/knowledge/import?mode=create${domain ? `&domain=${encodeURIComponent(domain)}` : ''}`,
+              )
+            }
+          >
+            + 新建
+          </Button>
+          <Button
+            onClick={() =>
+              navigate(
+                `/knowledge/import?mode=upload${domain ? `&domain=${encodeURIComponent(domain)}` : ''}`,
+              )
+            }
+          >
+            上传
+          </Button>
+        </Space>
       }
     >
       <Space style={{ marginBottom: 16 }}>
@@ -87,19 +135,30 @@ export default function SourceDocList() {
           placeholder="状态"
           style={{ width: 120 }}
           value={status}
-          onChange={setStatus}
+          onChange={(v) => {
+            setStatus(v)
+            setPage(1)
+          }}
           options={[
             { value: 'active', label: '在用' },
             { value: 'archived', label: '已归档' },
           ]}
         />
-        <Input.Search placeholder="搜索名称" style={{ width: 220 }} onSearch={setQ} allowClear />
+        <Input.Search
+          placeholder="搜索名称"
+          style={{ width: 220 }}
+          onSearch={(v) => {
+            setQ(v)
+            setPage(1)
+          }}
+          allowClear
+        />
       </Space>
       <Table<SourceDocItem>
         rowKey="id"
         loading={loading}
         dataSource={items}
-        pagination={false}
+        pagination={{ current: page, pageSize: 20, total, onChange: setPage }}
         columns={[
           {
             title: '名称',
@@ -115,6 +174,11 @@ export default function SourceDocList() {
           {
             title: '条目数（在架/总）',
             render: (_, r) => `${r.entry_published}/${r.entry_total}`,
+          },
+          {
+            title: '索引进度',
+            width: 200,
+            render: (_, r) => <IndexProgressCell r={r} />,
           },
           {
             title: '状态',
@@ -145,6 +209,7 @@ export default function SourceDocList() {
           },
         ]}
       />
+      <Typography.Text type="secondary">共 {total} 个文件</Typography.Text>
     </Card>
   )
 }

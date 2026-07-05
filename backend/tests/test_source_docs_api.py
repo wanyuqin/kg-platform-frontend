@@ -68,9 +68,52 @@ class TestSourceDocList:
             "/api/source-docs", params={"domain": "free-order"},
             cookies=await cookies_for("ou_member"),
         )
-        item = resp.json()["items"][0]
+        body = resp.json()
+        item = body["items"][0]
         assert item["name"] == "文件甲"
         assert item["entry_total"] == 2 and item["entry_published"] == 2
+        assert item["index_indexing"] == 2
+        assert item["index_ready"] == 0 and item["index_failed"] == 0
+        assert body["total"] == 1 and body["page"] == 1
+
+    async def test_list_index_stats_mixed(self, app_client, seeded, db_session):
+        doc_id = await import_doc(app_client, "文件甲")
+        from app.storage.pg.models import Knowledge
+
+        rows = (
+            await db_session.execute(
+                select(Knowledge).where(Knowledge.source_doc_id == doc_id).order_by(Knowledge.doc_seq)
+            )
+        ).scalars().all()
+        rows[0].index_state = "ready"
+        rows[1].index_state = "failed"
+        await db_session.commit()
+        resp = await app_client.get(
+            "/api/source-docs", params={"domain": "free-order"},
+            cookies=await cookies_for("ou_member"),
+        )
+        item = resp.json()["items"][0]
+        assert item["index_ready"] == 1
+        assert item["index_failed"] == 1
+        assert item["index_indexing"] == 0
+
+    async def test_list_pagination(self, app_client, seeded):
+        for i in range(3):
+            await import_doc(app_client, f"文件{i}")
+        resp = await app_client.get(
+            "/api/source-docs",
+            params={"domain": "free-order", "page": 1, "page_size": 2},
+            cookies=await cookies_for("ou_member"),
+        )
+        body = resp.json()
+        assert body["total"] == 3
+        assert len(body["items"]) == 2
+        resp2 = await app_client.get(
+            "/api/source-docs",
+            params={"domain": "free-order", "page": 2, "page_size": 2},
+            cookies=await cookies_for("ou_member"),
+        )
+        assert len(resp2.json()["items"]) == 1
 
     async def test_outsider_sees_nothing(self, app_client, seeded):
         await import_doc(app_client, "文件甲")
@@ -79,6 +122,7 @@ class TestSourceDocList:
             cookies=await cookies_for("ou_out"),
         )
         assert resp.json()["items"] == []
+        assert resp.json()["total"] == 0
 
 
 class TestSourceDocDetail:
