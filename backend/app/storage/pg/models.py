@@ -201,3 +201,60 @@ class AuditLog(Base):
     version: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int] = mapped_column(Integer)
     __table_args__ = {"postgresql_partition_by": "RANGE (ts)"}
+
+
+class ReviewTask(Base):
+    """P2 审核任务（技术 3.3）；pending_review 副作用，控制台审核待办队列。"""
+
+    __tablename__ = "review_task"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kid: Mapped[str] = mapped_column(String(64), ForeignKey("knowledge.kid"))
+    domain_code: Mapped[str] = mapped_column(String(32), ForeignKey("domain.code"))
+    task_type: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
+    risk_note: Mapped[str | None] = mapped_column(String(256))
+    submitter_id: Mapped[str] = mapped_column(String(64))
+    reviewer_id: Mapped[str | None] = mapped_column(String(64))
+    reject_reason: Mapped[str | None] = mapped_column(String(512))
+    feishu_card_id: Mapped[str | None] = mapped_column(String(128))
+    card_sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    card_expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    resolved_by: Mapped[str | None] = mapped_column(String(64))
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+    __table_args__ = (
+        CheckConstraint("task_type IN ('risk','manual_fill','conflict')"),
+        CheckConstraint("status IN ('pending','approved','rejected','expired')"),
+    )
+
+
+class SyncState(Base):
+    """P2 飞书文档同步状态（技术 3.3，ADR-0015）。"""
+
+    __tablename__ = "sync_state"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_doc_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("source_doc.id"), unique=True)
+    domain_code: Mapped[str] = mapped_column(String(32), ForeignKey("domain.code"))
+    feishu_doc_token: Mapped[str] = mapped_column(String(128))
+    feishu_doc_type: Mapped[str] = mapped_column(String(16))
+    feishu_title: Mapped[str | None] = mapped_column(String(256))
+    feishu_url: Mapped[str | None] = mapped_column(String(1024))
+    subscription_id: Mapped[str | None] = mapped_column(String(128))
+    content_revision: Mapped[str | None] = mapped_column(String(64))
+    content_hash: Mapped[str | None] = mapped_column(CHAR(64))
+    sync_status: Mapped[str] = mapped_column(String(16), server_default=text("'registered'"))
+    last_sync_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_event_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_poll_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    next_poll_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(512))
+    registered_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=_now)
+    __table_args__ = (
+        CheckConstraint("feishu_doc_type IN ('docx','wiki','doc')"),
+        CheckConstraint("sync_status IN ('registered','syncing','idle','error','quarantine')"),
+    )

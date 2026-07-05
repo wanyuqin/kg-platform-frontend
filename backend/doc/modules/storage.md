@@ -36,9 +36,18 @@
 - `idx_knowledge_tags GIN (tags)`——tag 过滤；
 - `uq_knowledge_hash ON knowledge (content_hash) WHERE status <> 'archived'`——全库去重第一级漏斗，冲突返回 409。
 
-### P2 预留（技术 3.3）
+### P2 表（技术 3.3，迁移 `0005_p2_review_sync`）
 
-sync_state（飞书同步状态）与 review_task（审核任务）随 P2 迁移脚本交付，本期**不建表**——避免未联调的结构提前入库。knowledge 的 pending_review 状态、risk_note、domain 的 reviewer_user_id / feishu_folder_token 已预留，P2 无需改主表结构。
+| 表 | 用途 | 关键点 |
+|-|-|-|
+| review_task | 审核任务队列 | kid FK；task_type ∈ risk / manual_fill / conflict（三 tab）；status ∈ pending / approved / rejected / expired；同一 kid 仅一条 pending（部分唯一索引）；飞书卡片 id 与超时时间 |
+| sync_state | 飞书文档同步 | source_doc_id 1:1 UNIQUE；feishu_doc_token 全局唯一；sync_status ∈ registered / syncing / idle / error / quarantine（敏感隔离）；事件/轮询游标字段 |
+
+本地基建（RocketMQ + MinIO）与飞书权限清单见 [local-dev-p2.md](local-dev-p2.md)。
+
+### P2 预留（技术 3.3，历史说明）
+
+knowledge 的 pending_review 状态、risk_note、domain 的 reviewer_user_id / feishu_folder_token 已在 P1 主表预留，P2 无需改主表结构。
 
 ## Redis（storage/redis/）
 
