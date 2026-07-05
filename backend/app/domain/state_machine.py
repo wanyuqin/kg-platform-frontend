@@ -16,15 +16,15 @@ class Status(StrEnum):
 
 
 class Event(StrEnum):
-    SAVE_DRAFT = "save_draft"          # P1：（新建）→ draft
-    SUBMIT_PASS = "submit_pass"        # P1：draft → published（低风险）
-    SUBMIT_RISK = "submit_risk"        # P2：draft → pending_review
+    SAVE_DRAFT = "save_draft"  # P1：（新建）→ draft
+    SUBMIT_PASS = "submit_pass"  # P1：draft → published（低风险）
+    SUBMIT_RISK = "submit_risk"  # P2：draft → pending_review
     REVIEW_APPROVE = "review_approve"  # P2
-    REVIEW_REJECT = "review_reject"    # P2
+    REVIEW_REJECT = "review_reject"  # P2
     UPDATE_CONTENT = "update_content"  # P1：published → published（version+1）
-    EXPIRE = "expire"                  # P3：过期扫描
-    RENEW = "renew"                    # P3：续期
-    ARCHIVE = "archive"                # P1：下架，终态
+    EXPIRE = "expire"  # P3：过期扫描
+    RENEW = "renew"  # P3：续期
+    ARCHIVE = "archive"  # P1：下架，终态
 
 
 class InvalidTransition(Exception):
@@ -38,8 +38,10 @@ class InvalidTransition(Exception):
 TRANSITIONS: dict[tuple[Status | None, Event], Status] = {
     (None, Event.SAVE_DRAFT): Status.DRAFT,
     (None, Event.SUBMIT_PASS): Status.PUBLISHED,  # 表单直接提交发布
+    (None, Event.SUBMIT_RISK): Status.PENDING_REVIEW,  # 导入批次含文件内重复
     (Status.DRAFT, Event.SUBMIT_PASS): Status.PUBLISHED,
     (Status.DRAFT, Event.SUBMIT_RISK): Status.PENDING_REVIEW,
+    (Status.PUBLISHED, Event.SUBMIT_RISK): Status.PENDING_REVIEW,  # 更新条目待审核入库
     (Status.PENDING_REVIEW, Event.REVIEW_APPROVE): Status.PUBLISHED,
     (Status.PENDING_REVIEW, Event.REVIEW_REJECT): Status.DRAFT,
     (Status.PUBLISHED, Event.UPDATE_CONTENT): Status.PUBLISHED,

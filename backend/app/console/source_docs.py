@@ -4,13 +4,13 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import errors
 from app.config import get_settings
 from app.console import auth
-from app.console.knowledge import _batch_out, run_pipeline
+from app.console.knowledge import _apply_batch_dedup, _batch_out, run_pipeline
 from app.console.router_deps import current_user
 from app.domain.state_machine import Event, Status, transition
 from app.pipeline import parser
@@ -31,7 +31,14 @@ from app.storage.viking.client import VikingClient, build_uri, get_viking
 router = APIRouter()
 
 
-def _doc_out(doc: SourceDoc, total: int = 0, published: int = 0) -> dict:
+def _doc_out(
+    doc: SourceDoc,
+    total: int = 0,
+    published: int = 0,
+    index_ready: int = 0,
+    index_indexing: int = 0,
+    index_failed: int = 0,
+) -> dict:
     return {
         "id": doc.id,
         "name": doc.name,
@@ -42,6 +49,9 @@ def _doc_out(doc: SourceDoc, total: int = 0, published: int = 0) -> dict:
         "status": doc.status,
         "entry_total": total,
         "entry_published": published,
+        "index_ready": index_ready,
+        "index_indexing": index_indexing,
+        "index_failed": index_failed,
         "updated_at": doc.updated_at.isoformat(),
     }
 
@@ -65,12 +75,24 @@ async def load_doc(
     return doc
 
 
+def _pub_index_sum(index_state: str):
+    return func.sum(
+        case(
+            (and_(Knowledge.status == Status.PUBLISHED, Knowledge.index_state == index_state), 1),
+            else_=0,
+        )
+    )
+
+
 def _count_stmt():
     return (
         select(
             Knowledge.source_doc_id,
             func.count().label("total"),
             func.sum(case((Knowledge.status == Status.PUBLISHED, 1), else_=0)).label("published"),
+            _pub_index_sum("ready").label("index_ready"),
+            _pub_index_sum("indexing").label("index_indexing"),
+            _pub_index_sum("failed").label("index_failed"),
         )
         .group_by(Knowledge.source_doc_id)
         .subquery()
@@ -83,12 +105,22 @@ async def list_source_docs(
     type: str | None = None,  # noqa: A002
     status: str | None = None,
     q: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
     user: ConsoleUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    page_size = min(page_size, 100)
     counts = _count_stmt()
     stmt = (
-        select(SourceDoc, counts.c.total, counts.c.published)
+        select(
+            SourceDoc,
+            counts.c.total,
+            counts.c.published,
+            counts.c.index_ready,
+            counts.c.index_indexing,
+            counts.c.index_failed,
+        )
         .outerjoin(counts, counts.c.source_doc_id == SourceDoc.id)
         .order_by(SourceDoc.updated_at.desc())
     )
@@ -105,8 +137,27 @@ async def list_source_docs(
         stmt = stmt.where(SourceDoc.status == status)
     if q:
         stmt = stmt.where(SourceDoc.name.ilike(f"%{q}%"))
-    rows = (await session.execute(stmt)).all()
-    return {"items": [_doc_out(d, t or 0, int(p or 0)) for d, t, p in rows]}
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await session.execute(count_stmt)).scalar_one()
+    rows = (
+        await session.execute(stmt.offset((page - 1) * page_size).limit(page_size))
+    ).all()
+    return {
+        "items": [
+            _doc_out(
+                d,
+                t or 0,
+                int(p or 0),
+                int(ir or 0),
+                int(ii or 0),
+                int(ifailed or 0),
+            )
+            for d, t, p, ir, ii, ifailed in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
 
 
 @router.get("/source-docs/{doc_id}")
@@ -149,8 +200,19 @@ async def source_doc_detail(
     for bid, action, n in stats_rows:
         stats.setdefault(bid, {})[action] = n
     published = sum(1 for e in entries if e.status == Status.PUBLISHED)
+    index_ready = sum(
+        1 for e in entries if e.status == Status.PUBLISHED and e.index_state == "ready"
+    )
+    index_indexing = sum(
+        1 for e in entries if e.status == Status.PUBLISHED and e.index_state == "indexing"
+    )
+    index_failed = sum(
+        1 for e in entries if e.status == Status.PUBLISHED and e.index_state == "failed"
+    )
     return {
-        **_doc_out(doc, len(entries), published),
+        **_doc_out(
+            doc, len(entries), published, index_ready, index_indexing, index_failed
+        ),
         "entries": [
             {
                 "kid": e.kid,
@@ -246,7 +308,9 @@ async def update_source_doc(
     )
     existing = [
         ExistingEntry(
-            kid=r.kid, title=r.title, content_hash=r.content_hash,
+            kid=r.kid,
+            title=r.title,
+            content_hash=r.content_hash,
             is_form=r.source_ref.startswith("form:"),
         )
         for r in rows
@@ -254,9 +318,12 @@ async def update_source_doc(
     aligned = align(doc.type, content, existing)
 
     batch = ImportBatch(
-        domain_code=doc.domain_code, type=doc.type, file_name=doc.name,
+        domain_code=doc.domain_code,
+        type=doc.type,
+        file_name=doc.name,
         origin="manual" if text is not None else "upload",
-        source_doc_id=doc.id, source_url=file_source_url or doc.source_url,
+        source_doc_id=doc.id,
+        source_url=file_source_url or doc.source_url,
         source_title=file_source_title or doc.source_title,
         created_by=user.user_id,
     )
@@ -271,12 +338,19 @@ async def update_source_doc(
             validation, is_valid = run_pipeline(doc.type, fields)
         items.append(
             ImportItem(
-                batch_id=batch.id, seq=a.seq, title=a.title, content=a.content,
-                validation=validation, is_valid=is_valid,
-                align_action=a.align_action, match_kid=a.match_kid,
+                batch_id=batch.id,
+                seq=a.seq,
+                title=a.title,
+                content=a.content,
+                validation=validation,
+                is_valid=is_valid,
+                align_action=a.align_action,
+                match_kid=a.match_kid,
             )
         )
     session.add_all(items)
+    await session.flush()
+    _apply_batch_dedup(doc.type, items)
     await session.commit()
     form_kids = {r.kid for r in rows if r.source_ref.startswith("form:")}
     return _batch_out(batch, items, form_kids=form_kids)
@@ -300,12 +374,16 @@ async def renew_source_doc(
     domain = await session.get(Domain, doc.domain_code)
     new_expire = date.today() + timedelta(days=body.days or domain.default_ttl_days)
     rows = (
-        (await session.execute(
-            select(Knowledge).where(
-                Knowledge.source_doc_id == doc_id,
-                Knowledge.status.notin_([Status.DRAFT, Status.ARCHIVED]),
+        (
+            await session.execute(
+                select(Knowledge).where(
+                    Knowledge.source_doc_id == doc_id,
+                    Knowledge.status.notin_([Status.DRAFT, Status.ARCHIVED]),
+                )
             )
-        )).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     for row in rows:
         if row.status == Status.EXPIRED:
@@ -326,12 +404,16 @@ async def offline_source_doc(
     # 有意不加 active 守卫：重复下架幂等成功（archived_entries: 0），与条目级下架的幂等语义一致
     doc = await load_doc(session, user, doc_id)
     rows = (
-        (await session.execute(
-            select(Knowledge).where(
-                Knowledge.source_doc_id == doc_id,
-                Knowledge.status.in_([Status.PUBLISHED, Status.EXPIRED]),
+        (
+            await session.execute(
+                select(Knowledge).where(
+                    Knowledge.source_doc_id == doc_id,
+                    Knowledge.status.in_([Status.PUBLISHED, Status.EXPIRED]),
+                )
             )
-        )).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     for row in rows:
         row.status = transition(Status(row.status), Event.ARCHIVE)

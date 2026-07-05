@@ -15,7 +15,9 @@ def test_form_direct_submit():
 
 
 def test_p2_review_loop():
+    assert transition(None, Event.SUBMIT_RISK) == Status.PENDING_REVIEW
     assert transition(Status.DRAFT, Event.SUBMIT_RISK) == Status.PENDING_REVIEW
+    assert transition(Status.PUBLISHED, Event.SUBMIT_RISK) == Status.PENDING_REVIEW
     assert transition(Status.PENDING_REVIEW, Event.REVIEW_APPROVE) == Status.PUBLISHED
     assert transition(Status.PENDING_REVIEW, Event.REVIEW_REJECT) == Status.DRAFT
 

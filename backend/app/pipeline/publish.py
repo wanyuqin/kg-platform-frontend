@@ -9,6 +9,7 @@ status 正交，技术 四）。去重先查询友好报错、再靠 uq_knowledg
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -169,14 +170,17 @@ async def publish(
     viking: VikingClient,
     inp: PublishInput,
     kid: str | None = None,
+    mode: Literal["publish", "review"] = "publish",
 ) -> PublishResult:
     """新建发布 / draft 提交发布 / published 内容更新（version+1）。
 
-    返回时 index_state ∈ {indexing, failed}；ready 由 scheduler 轮询置位（8.4）。
+    mode=review：待审核入库（SUBMIT_RISK），不写 OpenViking，index_state=none。
+    返回时 index_state ∈ {indexing, failed, none}；ready 由 scheduler 轮询置位（8.4）。
     """
     domain = await _load_domain(session, inp.domain_code)
     hash_ = content_hash(inp.type_, inp.sections)
     body = render_markdown(inp.title, inp.type_, inp.sections)
+    review = mode == "review"
 
     existing_kid = await _find_duplicate(session, hash_, exclude_kid=kid)
     if existing_kid:
@@ -184,7 +188,7 @@ async def publish(
 
     try:
         if kid is None:
-            status = transition(None, Event.SUBMIT_PASS)
+            status = transition(None, Event.SUBMIT_RISK if review else Event.SUBMIT_PASS)
             seq = await _take_seq(session, inp.domain_code, inp.type_)
             kid = build_kid(inp.type_, domain.short_code, seq)
             version = 1
@@ -205,7 +209,7 @@ async def publish(
                 effective_date=inp.effective_date,
                 expire_date=_resolve_expire(inp, domain),
                 content_hash=hash_,
-                index_state="indexing",
+                index_state="none" if review else "indexing",
             )
             session.add(row)
         else:
@@ -214,7 +218,10 @@ async def publish(
                     select(Knowledge).where(Knowledge.kid == kid).with_for_update()
                 )
             ).scalar_one()
-            event = Event.SUBMIT_PASS if row.status == Status.DRAFT else Event.UPDATE_CONTENT
+            if review:
+                event = Event.SUBMIT_RISK
+            else:
+                event = Event.SUBMIT_PASS if row.status == Status.DRAFT else Event.UPDATE_CONTENT
             status = transition(Status(row.status), event)
             version = row.version if event == Event.SUBMIT_PASS else row.version + 1
             row.title = inp.title
@@ -227,7 +234,7 @@ async def publish(
             row.effective_date = inp.effective_date
             row.expire_date = _resolve_expire(inp, domain)
             row.content_hash = hash_
-            row.index_state = "indexing"
+            row.index_state = "none" if review else "indexing"
             row.updated_at = func.now()
 
         # 清理草稿正文槽位（version=0，见 save_draft）
@@ -268,17 +275,20 @@ async def publish(
             raise DuplicateContent(existing_kid) from exc
         raise
 
-    index_state = "indexing"
-    try:
-        await viking.write(
-            build_uri(inp.domain_code, inp.type_, kid),
-            build_frontmatter(kid, inp.title, inp.domain_code, inp.type_, inp.tags, inp.source_url)
-            + body,
-        )
-    except VikingError:
-        # 不回退 published：read 走 PG 快照仍可用，search 不可见，scheduler 重试收敛
-        index_state = "failed"
-        row.index_state = index_state
-        await session.commit()
+    index_state = "none" if review else "indexing"
+    if not review:
+        try:
+            await viking.write(
+                build_uri(inp.domain_code, inp.type_, kid),
+                build_frontmatter(
+                    kid, inp.title, inp.domain_code, inp.type_, inp.tags, inp.source_url
+                )
+                + body,
+            )
+        except VikingError:
+            # 不回退 published：read 走 PG 快照仍可用，search 不可见，scheduler 重试收敛
+            index_state = "failed"
+            row.index_state = index_state
+            await session.commit()
 
     return PublishResult(kid=kid, version=version, status=str(status), index_state=index_state)

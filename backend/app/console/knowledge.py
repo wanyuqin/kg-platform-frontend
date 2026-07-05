@@ -24,6 +24,7 @@ from app.domain.kid import KNOWLEDGE_TYPES
 from app.domain.source import resolve_source_title
 from app.domain.state_machine import Event, InvalidTransition, Status, transition
 from app.pipeline import parser, sensitive, validators
+from app.pipeline.dedup import DedupInput, batch_dedup_findings, merge_dedup_into_validation
 from app.pipeline.publish import DuplicateContent, PublishInput, publish, save_draft
 from app.storage.pg.models import (
     ConsoleUser,
@@ -56,6 +57,43 @@ def run_pipeline(type_: str, fields: dict[str, str]) -> tuple[list[dict], bool]:
         )
     blocked = any(f["level"] == "blocking" for f in findings)
     return findings, not blocked
+
+
+def _apply_batch_dedup(type_: str, items: list[ImportItem]) -> None:
+    """阶段一：批内去重写入 import_item.validation（调用前须 flush 以拿到 id）。"""
+    inputs = []
+    for item in items:
+        _, fields = parser.parse_sections(item.content)
+        inputs.append(
+            DedupInput(
+                seq=item.seq,
+                item_id=item.id,
+                fields=fields,
+                align_action=item.align_action or "new",
+                skip=not item.is_valid,
+            )
+        )
+    findings_map = batch_dedup_findings(type_, inputs)
+    for item in items:
+        extra = findings_map.get(item.id, [])
+        if extra:
+            item.validation, item.is_valid = merge_dedup_into_validation(item.validation, extra)
+
+
+def _batch_stats(items: list[ImportItem]) -> dict:
+    duplicate_in_batch = sum(
+        1 for i in items if any(v.get("rule") == "duplicate_in_batch" for v in (i.validation or []))
+    )
+    return {
+        "total": len(items),
+        "valid": sum(1 for i in items if i.is_valid),
+        "duplicate_in_batch": duplicate_in_batch,
+        "requires_review": duplicate_in_batch > 0,
+    }
+
+
+def _batch_requires_review(items: list[ImportItem]) -> bool:
+    return _batch_stats(items)["requires_review"]
 
 
 async def _can_edit(session: AsyncSession, user: ConsoleUser, row: Knowledge) -> None:
@@ -92,8 +130,14 @@ async def resolve_source_doc(
     )
     if dup.scalar_one_or_none() is not None:
         raise errors.conflict(f"知识文件「{name}」已存在")
-    doc = SourceDoc(name=name, domain_code=domain, type=type_, source="manual",
-                    source_title=name, created_by=user.user_id)
+    doc = SourceDoc(
+        name=name,
+        domain_code=domain,
+        type=type_,
+        source="manual",
+        source_title=name,
+        created_by=user.user_id,
+    )
     session.add(doc)
     try:
         await session.flush()  # 拿 id，不提交（与条目同事务）
@@ -174,7 +218,9 @@ def _resolve_source_url(
     return doc.source_url
 
 
-def _to_input(body: KnowledgeCreate, user: ConsoleUser, doc: SourceDoc, doc_seq: int) -> PublishInput:
+def _to_input(
+    body: KnowledgeCreate, user: ConsoleUser, doc: SourceDoc, doc_seq: int
+) -> PublishInput:
     return PublishInput(
         domain_code=body.domain,
         type_=body.type,
@@ -268,6 +314,8 @@ async def list_knowledge(
         stmt = stmt.where(
             or_(Knowledge.title.ilike(f"%{q}%"), Knowledge.kid.ilike(f"%{q}%"))
         )  # 线稿⑤：搜索标题 / kid
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await session.execute(count_stmt)).scalar_one()
     rows = (
         (await session.execute(stmt.offset((page - 1) * page_size).limit(page_size)))
         .scalars()
@@ -277,9 +325,9 @@ async def list_knowledge(
     doc_ids = {r.source_doc_id for r in rows if r.source_doc_id is not None}
     docs = {
         d.id: d
-        for d in (
-            await session.execute(select(SourceDoc).where(SourceDoc.id.in_(doc_ids)))
-        ).scalars().all()
+        for d in (await session.execute(select(SourceDoc).where(SourceDoc.id.in_(doc_ids))))
+        .scalars()
+        .all()
     }
     return {
         "items": [
@@ -288,6 +336,7 @@ async def list_knowledge(
         ],
         "page": page,
         "page_size": page_size,
+        "total": total,
     }
 
 
@@ -515,7 +564,10 @@ async def upload_import(
         raise errors.conflict(f"知识文件「{name}」已存在")
 
     batch = ImportBatch(
-        domain_code=domain, type=type, file_name=name, created_by=user.user_id,
+        domain_code=domain,
+        type=type,
+        file_name=name,
+        created_by=user.user_id,
         origin="manual" if text is not None else "upload",
         source_url=file_source_url,
         source_title=file_source_title or name,
@@ -539,6 +591,8 @@ async def upload_import(
             )
         )
     session.add_all(items)
+    await session.flush()
+    _apply_batch_dedup(type, items)
     await session.commit()
     return _batch_out(batch, items)
 
@@ -575,6 +629,7 @@ def _batch_out(
             }
             for i in items
         ],
+        "stats": _batch_stats(items),
         "template_url": f"/api/templates/{batch.type}.md",  # 拒收提示引用（设计 3.1）
     }
 
@@ -649,8 +704,11 @@ async def confirm_import(
         # 故 except 分支要用的属性先取局部变量
         file_name = batch.file_name
         doc = SourceDoc(
-            name=file_name, domain_code=batch.domain_code, type=batch.type,
-            source=batch.origin, source_url=batch.source_url,
+            name=file_name,
+            domain_code=batch.domain_code,
+            type=batch.type,
+            source=batch.origin,
+            source_url=batch.source_url,
             source_title=batch.source_title or file_name,
             created_by=user.user_id,
         )
@@ -672,7 +730,11 @@ async def confirm_import(
         if batch.source_title:
             doc.source_title = batch.source_title
     results = []
-    pending_deletes: list[str] = []  # 归档条目的索引删除延后到 commit 后（与 archive_knowledge 同序）
+    pending_deletes: list[
+        str
+    ] = []  # 归档条目的索引删除延后到 commit 后（与 archive_knowledge 同序）
+    requires_review = _batch_requires_review(items)
+    publish_mode = "review" if requires_review else "publish"
     for item_id in body.item_ids:
         item = by_id.get(item_id)
         if item is None:
@@ -702,6 +764,12 @@ async def confirm_import(
         if not item.is_valid:
             results.append({"item_id": item_id, "kid": None, "error": "blocking 校验未通过"})
             continue
+        if item.result_kid and item.align_action in ("new", "changed"):
+            status = "pending_review" if requires_review else "published"
+            results.append(
+                {"item_id": item_id, "kid": item.result_kid, "error": None, "status": status}
+            )
+            continue
         title, fields = parser.parse_sections(item.content)
         if batch.type == "faq" and fields.get("标准问法"):
             title = fields["标准问法"]
@@ -724,7 +792,7 @@ async def confirm_import(
             doc_seq=item.seq,
         )
         try:
-            result = await publish(session, viking, inp, kid=target_kid)
+            result = await publish(session, viking, inp, kid=target_kid, mode=publish_mode)
         except DuplicateContent as exc:
             results.append(
                 {"item_id": item_id, "kid": None, "error": f"与 {exc.existing_kid} 内容重复"}
@@ -734,7 +802,10 @@ async def confirm_import(
             results.append({"item_id": item_id, "kid": None, "error": "当前状态不允许更新"})
             continue
         item.result_kid = result.kid
-        results.append({"item_id": item_id, "kid": result.kid, "error": None})
+        entry_status = "pending_review" if requires_review else "published"
+        results.append(
+            {"item_id": item_id, "kid": result.kid, "error": None, "status": entry_status}
+        )
     # 更新批次：按新文本序重写 doc_seq（spec §5）；首次导入批次（全 new）跳过
     if any(i.align_action != "new" for i in items):
         ordered: list[str] = []
@@ -771,7 +842,27 @@ async def confirm_import(
     # commit 后再删索引（幂等，404 视为成功）：中途失败回滚时不至于索引已删而 DB 未落
     for uri in pending_deletes:
         await viking.delete(uri)
-    return {"id": batch.id, "status": batch.status, "source_doc_id": batch.source_doc_id, "results": results}
+    summary = {
+        "succeeded": sum(1 for r in results if r.get("kid") and not r.get("error")),
+        "pending_review": sum(1 for r in results if r.get("status") == "pending_review"),
+        "failed_duplicate": sum(1 for r in results if r.get("error") and "内容重复" in r["error"]),
+        "failed_blocking": sum(1 for r in results if r.get("error") == "blocking 校验未通过"),
+        "failed_other": sum(
+            1
+            for r in results
+            if r.get("error")
+            and r["error"] != "blocking 校验未通过"
+            and "内容重复" not in r["error"]
+        ),
+    }
+    return {
+        "id": batch.id,
+        "status": batch.status,
+        "source_doc_id": batch.source_doc_id,
+        "requires_review": requires_review,
+        "summary": summary,
+        "results": results,
+    }
 
 
 @router.get("/templates/{type_name}.md")
