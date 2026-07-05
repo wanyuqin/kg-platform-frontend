@@ -6,10 +6,18 @@ from fastapi.responses import JSONResponse
 
 
 class ApiError(Exception):
-    def __init__(self, http_status: int, code: str, message: str):
+    def __init__(
+        self,
+        http_status: int,
+        code: str,
+        message: str,
+        *,
+        qps_limit: int | None = None,
+    ):
         self.http_status = http_status
         self.code = code
         self.message = message
+        self.qps_limit = qps_limit
 
 
 # 便捷构造器
@@ -37,7 +45,12 @@ def not_found() -> ApiError:
 
 
 def rate_limited(limit: int) -> ApiError:
-    return ApiError(429, "rate_limited", f"QPS limit exceeded (limit={limit})")
+    return ApiError(
+        429,
+        "rate_limited",
+        f"QPS limit exceeded (limit={limit})",
+        qps_limit=limit,
+    )
 
 
 def upstream_unavailable() -> ApiError:

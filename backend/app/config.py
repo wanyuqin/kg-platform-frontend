@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     feishu_consumer_workers: int = 2
     feishu_mq_backend: str = "memory"  # memory | rocketmq
 
+    # MCP Server（P2，ADR-0014；默认开启，KG_MCP_ENABLED=false 可禁用）
+    mcp_enabled: bool = True
+    mcp_session_timeout_s: int = 300
+
     @property
     def alembic_database_url(self) -> str:
         # Alembic 走同步驱动

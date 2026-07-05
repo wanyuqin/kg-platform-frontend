@@ -12,7 +12,9 @@ from sqlalchemy import text
 
 from app import errors
 from app.audit import writer as audit_writer
+from app.config import get_settings
 from app.console.router import router as console_router
+from app.gateway.mcp.transport import mcp_lifespan, mount_mcp
 from app.gateway.router import router as gateway_router
 from app.storage.pg.session import get_session_factory
 from app.storage.redis.client import get_redis
@@ -36,7 +38,8 @@ _configure_logging()
 async def _lifespan(app: FastAPI):
     """审计消费协程随进程起停（技术 十一）；shutdown 时清尾一次（尽力而为）。"""
     consumer = asyncio.create_task(audit_writer.run_consumer(get_session_factory()))
-    yield
+    async with mcp_lifespan():
+        yield
     consumer.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await consumer
@@ -50,6 +53,9 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
         request.state.request_id = f"req_{uuid.uuid4().hex[:12]}"
+        scope_state = request.scope.setdefault("state", {})
+        if isinstance(scope_state, dict):
+            scope_state["request_id"] = request.state.request_id
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
         return response
@@ -57,6 +63,8 @@ def create_app() -> FastAPI:
     errors.install_handlers(app)
     app.include_router(gateway_router)
     app.include_router(console_router)
+    if get_settings().mcp_enabled:
+        mount_mcp(app)
 
     @app.get("/healthz")
     async def healthz():
