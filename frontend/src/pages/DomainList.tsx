@@ -15,12 +15,14 @@ import {
 } from 'antd'
 import { useNavigate } from 'react-router-dom'
 
-import { api, DomainItem } from '../api/client'
+import { api, DomainItem, KNOWLEDGE_TYPES, TYPE_LABEL } from '../api/client'
 
 const BAR_COLORS: Record<string, string> = {
   faq: '#2f54eb',
   policy: '#69b1ff',
   sop: '#bae0ff',
+  product: '#9254de',
+  case: '#f5222d',
   term: '#597ef7',
 }
 
@@ -50,7 +52,7 @@ export default function DomainList() {
   const createDomain = async () => {
     const values = await createForm.validateFields()
     await api.post('/api/domains', values)
-    message.success(`domain ${values.code} 已注册`)
+    message.success(`知识域 ${values.name}（${values.code}）已注册`)
     setCreateOpen(false)
     createForm.resetFields()
     load()
@@ -60,10 +62,10 @@ export default function DomainList() {
     const byType = d.stats?.by_type ?? {}
     const total = d.stats?.total ?? 0
     if (!total) return <div style={{ height: 8, background: '#f0f0f0', borderRadius: 4 }} />
-    const known = ['faq', 'policy', 'sop', 'term']
-    const parts = known
+    const known = KNOWLEDGE_TYPES.map((t) => t.value)
+    const parts: { type: string; n: number; color: string }[] = known
       .filter((t) => byType[t])
-      .map((t) => ({ type: t, n: byType[t], color: BAR_COLORS[t] }))
+      .map((t) => ({ type: t, n: byType[t], color: BAR_COLORS[t] ?? '#d9d9d9' }))
     const other = total - parts.reduce((s, p) => s + p.n, 0)
     if (other > 0) parts.push({ type: '其他', n: other, color: '#d9d9d9' })
     return (
@@ -74,7 +76,7 @@ export default function DomainList() {
           ))}
         </div>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {parts.map((p) => `${p.type} ${p.n}`).join(' · ')}
+          {parts.map((p) => `${TYPE_LABEL[p.type] ?? p.type} ${p.n}`).join(' · ')}
         </Typography.Text>
       </>
     )
@@ -82,11 +84,11 @@ export default function DomainList() {
 
   return (
     <Card
-      title="Domain"
+      title="知识域"
       loading={loading}
       extra={
         <Button type="primary" onClick={() => setCreateOpen(true)}>
-          + 新建 domain
+          + 新建知识域
         </Button>
       }
     >
@@ -102,9 +104,9 @@ export default function DomainList() {
               <div style={{ flex: 1 }}>
                 <Space align="baseline">
                   <Typography.Title level={4} style={{ margin: 0 }}>
-                    {d.code}
+                    {d.name}
                   </Typography.Title>
-                  <Typography.Text type="secondary">{d.name}</Typography.Text>
+                  <Typography.Text type="secondary">{d.code}</Typography.Text>
                 </Space>
                 <div style={{ margin: '8px 0' }}>
                   <Tag>启用</Tag>
@@ -148,7 +150,7 @@ export default function DomainList() {
       </Row>
 
       <Modal
-        title="注册 domain（code / short_code 全局唯一且不可改）"
+        title="注册知识域（标识 code / short_code 全局唯一且不可改）"
         open={createOpen}
         onOk={createDomain}
         onCancel={() => setCreateOpen(false)}

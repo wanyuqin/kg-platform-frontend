@@ -25,6 +25,18 @@ class Settings(BaseSettings):
     upload_max_mb: int = 2
     audit_retention_days: int = 180
 
+    # P2 基建（本地 docker-compose.dev.yml 默认值；P1 进程可不连）
+    rocketmq_namesrv: str = "localhost:9876"
+    rocketmq_topic_pipeline: str = "kg.pipeline"
+    rocketmq_topic_feishu_event: str = "kg.feishu.event"
+    rocketmq_topic_review_card: str = "kg.review.card"
+
+    oss_endpoint: str = "http://localhost:9000"
+    oss_access_key: str = "kgminio"
+    oss_secret_key: str = "kgminio123"
+    oss_bucket: str = "kg-assets"
+    oss_region: str = "us-east-1"  # MinIO 占位，SDK 必填
+
     @property
     def alembic_database_url(self) -> str:
         # Alembic 走同步驱动

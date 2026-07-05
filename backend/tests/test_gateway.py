@@ -164,6 +164,23 @@ def drain_audit() -> list[dict]:
     return records
 
 
+@pytest.fixture
+async def multi_domain_key(db_session):
+    key_id, plaintext = new_key_material()
+    db_session.add(
+        ApiKey(
+            key_id=key_id,
+            key_hash=hash_key(plaintext),
+            agent_name="multi-domain-agent",
+            domain_whitelist=["free-order", "other"],
+            qps_limit=1000,
+            created_by="test",
+        )
+    )
+    await db_session.commit()
+    return key_id, plaintext
+
+
 class TestRead:
     async def test_200_returns_snapshot_and_meta(self, client, seeded, api_key):
         resp = await client.get(f"/v1/knowledge/{seeded['ok']}", headers=auth(api_key))
@@ -223,6 +240,17 @@ class TestRead:
 
     async def test_404_foreign_domain(self, client, seeded, api_key):
         # 越权统一 404 不暴露存在性（ADR-0013）
+        resp = await client.get(f"/v1/knowledge/{seeded['foreign']}", headers=auth(api_key))
+        assert resp.status_code == 404
+
+    async def test_multi_domain_key_reads_foreign(self, client, seeded, multi_domain_key):
+        resp = await client.get(
+            f"/v1/knowledge/{seeded['foreign']}", headers=auth(multi_domain_key)
+        )
+        assert resp.status_code == 200
+        assert resp.json()["domain"] == "other"
+
+    async def test_single_domain_key_still_blocks_foreign(self, client, seeded, api_key):
         resp = await client.get(f"/v1/knowledge/{seeded['foreign']}", headers=auth(api_key))
         assert resp.status_code == 404
 
@@ -288,6 +316,24 @@ class TestSearch:
         prefixes = fake_viking.calls[0]["prefixes"]
         assert "viking://resources/free-order" in prefixes
         assert "viking://resources/common" in prefixes  # 自动并入 common
+
+    async def test_multi_domain_search_prefixes(self, client, seeded, multi_domain_key, fake_viking):
+        await client.post("/v1/search", json={"query": "政策"}, headers=auth(multi_domain_key))
+        prefixes = fake_viking.calls[0]["prefixes"]
+        assert "viking://resources/free-order" in prefixes
+        assert "viking://resources/other" in prefixes
+        assert "viking://resources/common" in prefixes
+
+    async def test_multi_domain_search_returns_foreign_hit(
+        self, client, seeded, multi_domain_key, fake_viking
+    ):
+        fake_viking.results = [hit(seeded["foreign"], domain="other", type_="policy")]
+        resp = await client.post(
+            "/v1/search", json={"query": "政策"}, headers=auth(multi_domain_key)
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["results"]) == 1
+        assert resp.json()["results"][0]["domain"] == "other"
 
     async def test_candidate_limit_is_topk_x3(self, client, seeded, api_key, fake_viking):
         await client.post("/v1/search", json={"query": "发票"}, headers=auth(api_key))

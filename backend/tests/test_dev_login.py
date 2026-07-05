@@ -52,3 +52,38 @@ class TestDevLogin:
             "/api/domains", cookies={console_auth.COOKIE_NAME: cookie_value}
         )
         assert listed.status_code == 200
+
+    async def test_me_returns_current_user(self, client, db_session, monkeypatch):
+        monkeypatch.setattr(get_settings(), "dev_login_enabled", True)
+        login = await client.get(
+            "/api/auth/dev-login",
+            params={"user_id": "ou_dev3", "name": "测试用户", "platform_admin": "true"},
+            follow_redirects=False,
+        )
+        cookies = {console_auth.COOKIE_NAME: login.cookies.get(console_auth.COOKIE_NAME)}
+        resp = await client.get("/api/auth/me", cookies=cookies)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {
+            "user_id": "ou_dev3",
+            "name": "测试用户",
+            "is_platform_admin": True,
+        }
+
+    async def test_me_unauthorized_without_session(self, client):
+        resp = await client.get("/api/auth/me")
+        assert resp.status_code == 401
+
+    async def test_logout_clears_session(self, client, monkeypatch):
+        monkeypatch.setattr(get_settings(), "dev_login_enabled", True)
+        login = await client.get(
+            "/api/auth/dev-login",
+            params={"user_id": "ou_dev4", "platform_admin": "true"},
+            follow_redirects=False,
+        )
+        cookies = {console_auth.COOKIE_NAME: login.cookies.get(console_auth.COOKIE_NAME)}
+        logout = await client.post("/api/auth/logout", cookies=cookies)
+        assert logout.status_code == 200
+        assert logout.json() == {"ok": True}
+        me = await client.get("/api/auth/me", cookies=cookies)
+        assert me.status_code == 401

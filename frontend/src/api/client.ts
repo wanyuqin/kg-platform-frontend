@@ -6,14 +6,20 @@ export interface ApiErrorBody {
   error: { code: string; message: string; request_id: string }
 }
 
-export const api = axios.create({ timeout: 15_000 })
+export const api = axios.create({ timeout: 15_000, withCredentials: true })
 
 api.interceptors.response.use(
   (resp) => resp,
   (err) => {
     const body = err.response?.data as ApiErrorBody | undefined
     if (err.response?.status === 401) {
-      message.error('未登录或会话过期，请先登录（本地开发：/api/auth/dev-login?user_id=dev&platform_admin=true）')
+      const onLoginPage = window.location.pathname === '/login'
+      const isMeProbe = String(err.config?.url ?? '').includes('/api/auth/me')
+      if (!onLoginPage && !isMeProbe) {
+        message.error('未登录或会话过期，请先登录')
+        const returnUrl = window.location.pathname + window.location.search
+        window.location.assign(`/login?returnUrl=${encodeURIComponent(returnUrl)}`)
+      }
     } else if (body?.error) {
       message.error(`${body.error.message}（${body.error.code} / ${body.error.request_id}）`)
     } else {
@@ -32,6 +38,10 @@ export const KNOWLEDGE_TYPES = [
   { value: 'term', label: '术语定义' },
 ] as const
 
+export const TYPE_LABEL: Record<string, string> = Object.fromEntries(
+  KNOWLEDGE_TYPES.map((t) => [t.value, t.label]),
+)
+
 export const STATUS_LABEL: Record<string, string> = {
   draft: '草稿',
   pending_review: '待审核',
@@ -41,10 +51,17 @@ export const STATUS_LABEL: Record<string, string> = {
 }
 
 export const INDEX_STATE_LABEL: Record<string, string> = {
-  none: '—',
+  none: '未索引',
   indexing: '索引中',
   ready: '可检索',
   failed: '索引失败（重试中）',
+}
+
+export const INDEX_STATE_TAG_COLOR: Record<string, string> = {
+  none: 'default',
+  indexing: 'processing',
+  ready: 'green',
+  failed: 'red',
 }
 
 // 六类模板段名（与后端附录 A / content_hash.SECTION_ORDER 一致）
@@ -120,6 +137,9 @@ export interface SourceDocItem {
   status: 'active' | 'archived'
   entry_total: number
   entry_published: number
+  index_ready: number
+  index_indexing: number
+  index_failed: number
   updated_at: string
 }
 
@@ -199,6 +219,36 @@ export interface DomainKeyItem {
   status: string
   domain_whitelist: string[]
   created_at: string
+  created_by: string
+  created_by_name: string
+  revoked_at: string | null
+  calls_30d: number
+  last_used_at: string | null
+}
+
+export interface UserDomainRole {
+  code: string
+  name: string
+  role: string
+}
+
+export interface ConsoleUserItem {
+  user_id: string
+  name: string
+  is_platform_admin: boolean
+  created_at: string
+  domains: UserDomainRole[]
+  active_key_count: number
+}
+
+export interface ConsoleUserDetail extends ConsoleUserItem {
+  keys: DomainKeyItem[]
+}
+
+export interface DomainMemberItem {
+  user_id: string
+  name: string
+  role: string
 }
 
 export interface KnowledgeDetailOut extends KnowledgeItem {
@@ -235,6 +285,7 @@ export interface ValidationFinding {
   rule: string
   level: 'blocking' | 'warning'
   message: string
+  meta?: Record<string, unknown>
 }
 
 export interface SubmitResult {
@@ -282,6 +333,13 @@ export interface ImportItemOut {
   is_form: boolean
 }
 
+export interface ImportBatchStats {
+  total: number
+  valid: number
+  duplicate_in_batch: number
+  requires_review: boolean
+}
+
 export interface ImportBatchOut {
   id: number
   domain: string
@@ -289,8 +347,33 @@ export interface ImportBatchOut {
   file_name: string
   status: string
   items: ImportItemOut[]
+  stats: ImportBatchStats
   template_url: string
   source_doc_id: number | null
+}
+
+export interface ImportConfirmSummary {
+  succeeded: number
+  pending_review: number
+  failed_duplicate: number
+  failed_blocking: number
+  failed_other: number
+}
+
+export interface ImportConfirmResult {
+  item_id: number
+  kid: string | null
+  error: string | null
+  status?: 'pending_review' | 'published'
+}
+
+export interface ImportConfirmOut {
+  id: number
+  status: string
+  source_doc_id: number | null
+  requires_review: boolean
+  summary: ImportConfirmSummary
+  results: ImportConfirmResult[]
 }
 
 export interface AuditLogItem {

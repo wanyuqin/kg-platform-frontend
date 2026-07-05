@@ -4,14 +4,17 @@
 """
 
 import secrets
+from typing import Annotated
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Cookie, Depends
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import errors
 from app.config import get_settings
 from app.console import admin, auth, knowledge, source_docs
+from app.console.router_deps import current_user
+from app.storage.pg.models import ConsoleUser
 from app.storage.pg.session import get_session
 
 router = APIRouter(prefix="/api", tags=["console"])
@@ -64,4 +67,26 @@ async def callback(code: str, session: AsyncSession = Depends(get_session)) -> R
         samesite="lax",
         max_age=get_settings().session_ttl_hours * 3600,
     )
+    return resp
+
+
+@router.get("/auth/me")
+async def me(user: ConsoleUser = Depends(current_user)) -> dict:
+    """当前登录用户（前端 session 探测与 Header 展示）。"""
+    return {
+        "user_id": user.user_id,
+        "name": user.name,
+        "is_platform_admin": user.is_platform_admin,
+    }
+
+
+@router.post("/auth/logout")
+async def logout(
+    kg_session: Annotated[str | None, Cookie(alias=auth.COOKIE_NAME)] = None,
+) -> JSONResponse:
+    """销毁 session 并清除 cookie。"""
+    if kg_session:
+        await auth.destroy_session(kg_session)
+    resp = JSONResponse(content={"ok": True})
+    resp.delete_cookie(auth.COOKIE_NAME)
     return resp

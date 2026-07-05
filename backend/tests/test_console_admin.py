@@ -133,6 +133,85 @@ class TestMembers:
         assert resp.status_code == 403
 
 
+class TestUsers:
+    async def test_list_and_search(self, app_client, admin_cookies, db_session):
+        db_session.add(ConsoleUser(user_id="ou_alice", name="Alice"))
+        db_session.add(ConsoleUser(user_id="ou_bob", name="Bob"))
+        await db_session.commit()
+
+        resp = await app_client.get("/api/users", cookies=admin_cookies)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] >= 3  # alice, bob, ou_platform
+        ids = {u["user_id"] for u in body["items"]}
+        assert "ou_alice" in ids
+
+        resp = await app_client.get("/api/users", params={"q": "Alice"}, cookies=admin_cookies)
+        assert resp.status_code == 200
+        assert all("Alice" in u["name"] or "alice" in u["user_id"].lower() for u in resp.json()["items"])
+
+    async def test_get_user_detail(self, app_client, admin_cookies, db_session):
+        db_session.add(Domain(code="free-order", short_code="fo", name="免单", created_by="t"))
+        db_session.add(ConsoleUser(user_id="ou_detail", name="Detail"))
+        db_session.add(DomainMember(domain_code="free-order", user_id="ou_detail", role="member"))
+        await db_session.commit()
+
+        resp = await app_client.get("/api/users/ou_detail", cookies=admin_cookies)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "Detail"
+        assert body["domains"] == [{"code": "free-order", "name": "免单", "role": "member"}]
+        assert body["keys"] == []
+
+    async def test_patch_platform_admin(self, app_client, admin_cookies, db_session):
+        db_session.add(ConsoleUser(user_id="ou_promote", name="Promote"))
+        await db_session.commit()
+
+        resp = await app_client.patch(
+            "/api/users/ou_promote",
+            json={"is_platform_admin": True},
+            cookies=admin_cookies,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["is_platform_admin"] is True
+
+        row = await db_session.get(ConsoleUser, "ou_promote")
+        assert row.is_platform_admin is True
+
+    async def test_cannot_revoke_self_platform_admin(self, app_client, admin_cookies):
+        resp = await app_client.patch(
+            "/api/users/ou_platform",
+            json={"is_platform_admin": False},
+            cookies=admin_cookies,
+        )
+        assert resp.status_code == 400
+
+    async def test_requires_platform_admin(self, app_client, member_cookies):
+        assert (await app_client.get("/api/users", cookies=member_cookies)).status_code == 403
+
+
+class TestDomainMembersList:
+    @pytest.fixture
+    async def domain(self, db_session):
+        db_session.add(Domain(code="free-order", short_code="fo", name="免单", created_by="t"))
+        await db_session.commit()
+
+    async def test_list_members(self, app_client, db_session, domain):
+        cookies = await login_as(db_session, "ou_dadmin")
+        db_session.add(DomainMember(domain_code="free-order", user_id="ou_dadmin", role="admin"))
+        db_session.add(ConsoleUser(user_id="ou_mem", name="成员"))
+        db_session.add(DomainMember(domain_code="free-order", user_id="ou_mem", role="member"))
+        await db_session.commit()
+
+        resp = await app_client.get("/api/domains/free-order/members", cookies=cookies)
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 2
+        by_id = {m["user_id"]: m for m in items}
+        assert by_id["ou_mem"]["name"] == "成员"
+        assert by_id["ou_mem"]["role"] == "member"
+
+
 class TestApiKeys:
     @pytest.fixture
     async def domain(self, db_session):
@@ -178,6 +257,132 @@ class TestApiKeys:
             cookies=member_cookies,
         )
         assert resp.status_code == 403
+
+    async def test_issue_multi_domain_whitelist(self, app_client, admin_cookies, db_session):
+        db_session.add(Domain(code="free-order", short_code="fo", name="免单", created_by="t"))
+        db_session.add(Domain(code="billing", short_code="bi", name="账单", created_by="t"))
+        await db_session.commit()
+        resp = await app_client.post(
+            "/api/domains/free-order/keys",
+            json={
+                "agent_name": "cross-agent",
+                "domain_whitelist": ["free-order", "billing", "common"],
+            },
+            cookies=admin_cookies,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["domain_whitelist"] == ["free-order", "billing"]
+
+    async def test_issue_unknown_domain_400(self, app_client, admin_cookies, domain):
+        resp = await app_client.post(
+            "/api/domains/free-order/keys",
+            json={"agent_name": "x", "domain_whitelist": ["no-such-domain"]},
+            cookies=admin_cookies,
+        )
+        assert resp.status_code == 400
+
+    async def test_duplicate_active_agent_409(self, app_client, admin_cookies, domain):
+        resp = await app_client.post(
+            "/api/domains/free-order/keys",
+            json={"agent_name": "dup-agent"},
+            cookies=admin_cookies,
+        )
+        assert resp.status_code == 200
+        resp2 = await app_client.post(
+            "/api/domains/free-order/keys",
+            json={"agent_name": "dup-agent"},
+            cookies=admin_cookies,
+        )
+        assert resp2.status_code == 409
+
+    async def test_agent_centric_issue_and_list(self, app_client, admin_cookies, db_session):
+        db_session.add(Domain(code="free-order", short_code="fo", name="免单", created_by="t"))
+        db_session.add(Domain(code="billing", short_code="bi", name="账单", created_by="t"))
+        await db_session.commit()
+        resp = await app_client.post(
+            "/api/keys",
+            json={
+                "agent_name": "global-agent",
+                "domain_whitelist": ["free-order", "billing"],
+                "qps_limit": 15,
+            },
+            cookies=admin_cookies,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["plaintext"].startswith("kp_")
+        assert body["domain_whitelist"] == ["free-order", "billing"]
+
+        listed = await app_client.get("/api/keys", cookies=admin_cookies)
+        assert listed.status_code == 200
+        agents = {k["agent_name"]: k for k in listed.json()["items"]}
+        assert agents["global-agent"]["domain_whitelist"] == ["free-order", "billing"]
+        assert agents["global-agent"]["created_by"] == "ou_platform"
+        assert agents["global-agent"]["calls_30d"] == 0
+
+    async def test_list_keys_with_usage(self, app_client, admin_cookies, domain, db_session):
+        issue = await app_client.post(
+            "/api/domains/free-order/keys",
+            json={"agent_name": "usage-agent"},
+            cookies=admin_cookies,
+        )
+        key_id = issue.json()["key_id"]
+        await db_session.execute(
+            insert(AuditLog),
+            [
+                dict(
+                    ts=datetime.now(UTC),
+                    key_id=key_id,
+                    action="search",
+                    query="test",
+                    latency_ms=50,
+                )
+            ],
+        )
+        await db_session.commit()
+
+        listed = await app_client.get("/api/keys", cookies=admin_cookies)
+        agents = {k["agent_name"]: k for k in listed.json()["items"]}
+        assert agents["usage-agent"]["calls_30d"] == 1
+        assert agents["usage-agent"]["last_used_at"] is not None
+
+    async def test_list_keys_filter_by_created_by(self, app_client, admin_cookies, domain):
+        await app_client.post(
+            "/api/domains/free-order/keys",
+            json={"agent_name": "filter-agent"},
+            cookies=admin_cookies,
+        )
+        resp = await app_client.get(
+            "/api/keys", params={"created_by": "ou_platform"}, cookies=admin_cookies
+        )
+        assert resp.status_code == 200
+        assert all(k["created_by"] == "ou_platform" for k in resp.json()["items"])
+
+    async def test_patch_whitelist_invalidate_cache(
+        self, app_client, admin_cookies, domain, db_session
+    ):
+        db_session.add(Domain(code="billing", short_code="bi", name="账单", created_by="t"))
+        await db_session.commit()
+        issue = await app_client.post(
+            "/api/domains/free-order/keys",
+            json={"agent_name": "patch-agent"},
+            cookies=admin_cookies,
+        )
+        key_id, plaintext = issue.json()["key_id"], issue.json()["plaintext"]
+
+        ctx = await authenticate(db_session, plaintext)
+        assert set(ctx.domain_whitelist) == {"free-order", "common"}
+
+        patch = await app_client.patch(
+            f"/api/keys/{key_id}",
+            json={"domain_whitelist": ["free-order", "billing"]},
+            cookies=admin_cookies,
+        )
+        assert patch.status_code == 200
+        assert patch.json()["domain_whitelist"] == ["free-order", "billing"]
+
+        ctx = await authenticate(db_session, plaintext)
+        assert set(ctx.domain_whitelist) == {"free-order", "billing", "common"}
 
 
 class TestAuditLogs:
