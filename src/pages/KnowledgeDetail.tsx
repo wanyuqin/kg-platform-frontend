@@ -25,6 +25,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
   daysUntil,
+  domainDisplayLabel,
+  DomainItem,
   KNOWLEDGE_TYPES,
   KnowledgeDetailOut,
   STATUS_LABEL,
@@ -37,6 +39,7 @@ export default function KnowledgeDetail() {
   const { kid } = useParams<{ kid: string }>()
   const navigate = useNavigate()
   const [detail, setDetail] = useState<KnowledgeDetailOut | null>(null)
+  const [domains, setDomains] = useState<DomainItem[]>([])
   const [renewOpen, setRenewOpen] = useState(false)
   const [renewDate, setRenewDate] = useState<Dayjs | null>(null)
   const [metaOpen, setMetaOpen] = useState(false)
@@ -46,6 +49,10 @@ export default function KnowledgeDetail() {
     const resp = await api.get(`/api/knowledge/${kid}`)
     setDetail(resp.data)
   }, [kid])
+
+  useEffect(() => {
+    api.get('/api/domains/mine').then((resp) => setDomains(resp.data.items))
+  }, [])
 
   useEffect(() => {
     load()
@@ -91,7 +98,7 @@ export default function KnowledgeDetail() {
         style={{ marginBottom: 12 }}
         items={[
           { title: <Link to="/knowledge">知识管理</Link> },
-          { title: detail.domain },
+          { title: domainDisplayLabel(domains, detail.domain) },
           { title: detail.kid },
         ]}
       />
@@ -177,7 +184,9 @@ export default function KnowledgeDetail() {
           <Card title="元数据" size="small" style={{ marginBottom: 16 }}>
             <Descriptions column={1} size="small">
               <Descriptions.Item label="kid">{detail.kid}</Descriptions.Item>
-              <Descriptions.Item label="domain">{detail.domain}</Descriptions.Item>
+              <Descriptions.Item label="知识域">
+                {domainDisplayLabel(domains, detail.domain)}
+              </Descriptions.Item>
               <Descriptions.Item label="type">{detail.type}</Descriptions.Item>
               <Descriptions.Item label="tags">
                 {detail.tags.length ? detail.tags.map((t) => <Tag key={t}>{t}</Tag>) : '—'}
@@ -196,10 +205,11 @@ export default function KnowledgeDetail() {
             <Descriptions column={1} size="small">
               <Descriptions.Item label="所属文件">
                 <a onClick={() => navigate(`/source-docs/${detail.source_doc.id}`)}>
-                  {detail.source_doc.name ?? `#${detail.source_doc.id}`}
+                  {detail.source_doc.title ?? detail.source_doc.name ?? `#${detail.source_doc.id}`}
                 </a>
               </Descriptions.Item>
-              <Descriptions.Item label="source_type">{detail.source_type}</Descriptions.Item>
+              <Descriptions.Item label="来源">{detail.source ?? detail.source_doc.source ?? '—'}</Descriptions.Item>
+              <Descriptions.Item label="原文标题">{detail.source_title ?? '—'}</Descriptions.Item>
               <Descriptions.Item label="原文链接">
                 {detail.source_url ? (
                   <a href={detail.source_url} target="_blank" rel="noreferrer">

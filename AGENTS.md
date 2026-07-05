@@ -1,8 +1,8 @@
 # AGENTS.md
 
-本文件为 AI 编码代理（Claude Code 等）在本仓库工作时的指引。
+本文件为 AI 编码代理（Claude Code 等）在 frontend 目录工作时的指引。
 
-知识管理平台控制台前端（kg-console）：React 18 + Ant Design 5 + Vite + TypeScript。页面范围与交互契约来自设计文档 7.2 的九页线框（P1 只做其中六页），后端接口契约见 [backend/doc/modules/console.md](https://github.com/wanyuqin/kg-platform-backend/blob/master/doc/modules/console.md) 与 [gateway.md](https://github.com/wanyuqin/kg-platform-backend/blob/master/doc/modules/gateway.md)。
+知识管理平台控制台前端（kg-console）：React 18 + Ant Design 5 + Vite + TypeScript。页面范围与交互契约来自设计文档 7.2 的九页线框（P1 只做其中六页），后端接口契约见 [../backend/doc/modules/console.md](../backend/doc/modules/console.md) 与 [gateway.md](../backend/doc/modules/gateway.md)。
 
 ## 常用命令
 
