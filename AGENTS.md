@@ -17,10 +17,12 @@ npm run preview
 
 ## 架构要点
 
-- **路由集中在 `src/App.tsx`**：侧边栏菜单 + Routes 一处维护，一页一文件放 `src/pages/`。当前 P1 页面：知识列表（主页）、知识详情、表单录入、拆分预览确认（ImportPreview）、domain 列表、审计查询。审核待办 / 打标 / 飞书同步管理是 P2，不要提前建页面。
+- **路由集中在 `src/App.tsx`**：侧边栏菜单 + Routes 一处维护，一页一文件放 `src/pages/`。P1 页面：知识列表（主页）、知识详情、表单录入、拆分预览确认（ImportPreview）、domain 列表、审计查询。P2 页面：飞书绑定向导（FeishuBind）、飞书同步面板（FeishuSyncPanel）、审核待办（ReviewQueue）、打标（GovernanceTagging）。
 - **请求必须走 `src/api/client.ts` 的 `api` 实例**：它统一处理后端错误 envelope（`{error: {code, message, request_id}}`）并弹 antd message，页面里不要再手写 axios 或重复错误提示。
 - **共享常量复用 client.ts**：六类知识类型 `KNOWLEDGE_TYPES`、状态中文映射 `STATUS_LABEL` 已定义，新页面直接引用，不要再抄一份。
-- 登录态：控制台走飞书 OAuth + session cookie（后端 `/api/auth/*`，尚未接入），请求无需手动带 token。
+- 登录态：走 `src/auth/` 模块（Context + 路由守卫 + `/login` 页）。后端 `/api/auth/*` 种 HttpOnly `kg_session` cookie，请求无需手动带 token。
+  - 本地开发默认 `dev` 模式（Login 页 dev-login 表单）；生产默认 `oauth`（飞书）。可通过 `VITE_AUTH_PROVIDER=dev|oauth|sso` 切换；公司 SSO 预留 `sso` + `VITE_SSO_LOGIN_URL`。
+  - 会话探测：`GET /api/auth/me`；登出：`POST /api/auth/logout`。
 
 ## 约定
 

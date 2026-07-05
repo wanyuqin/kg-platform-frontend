@@ -1,0 +1,9 @@
+.markdown-editor-textarea::placeholder {
+  color: #9d9d9d;
+  opacity: 1;
+}
+
+.markdown-editor-textarea:disabled::placeholder {
+  color: #6e6e6e;
+  opacity: 1;
+}

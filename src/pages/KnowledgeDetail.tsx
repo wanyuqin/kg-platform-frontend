@@ -27,6 +27,8 @@ import {
   daysUntil,
   domainDisplayLabel,
   DomainItem,
+  INDEX_STATE_LABEL,
+  INDEX_STATE_TAG_COLOR,
   KNOWLEDGE_TYPES,
   KnowledgeDetailOut,
   STATUS_LABEL,
@@ -110,6 +112,11 @@ export default function KnowledgeDetail() {
           <Tag color={detail.status === 'published' ? 'green' : 'orange'}>
             {STATUS_LABEL[detail.status] ?? detail.status}
           </Tag>
+          {detail.status === 'published' && (
+            <Tag color={INDEX_STATE_TAG_COLOR[detail.index_state] ?? 'default'}>
+              {INDEX_STATE_LABEL[detail.index_state] ?? detail.index_state}
+            </Tag>
+          )}
           <Tag>v{detail.version}</Tag>
         </Space>
         <Space>
@@ -193,6 +200,11 @@ export default function KnowledgeDetail() {
               </Descriptions.Item>
               <Descriptions.Item label="owner">{detail.owner}</Descriptions.Item>
               <Descriptions.Item label="version">{detail.version}</Descriptions.Item>
+              {detail.status === 'published' && (
+                <Descriptions.Item label="索引状态">
+                  {INDEX_STATE_LABEL[detail.index_state] ?? detail.index_state}
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="expire_date">
                 <Space size={4}>
                   {detail.expire_date}

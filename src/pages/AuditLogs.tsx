@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Input, Select, Space, Table, Tag } from 'antd'
+import { useSearchParams } from 'react-router-dom'
 
 import { api, AuditLogItem } from '../api/client'
 
 // 审计查询页（P1，平台管理员）：180 天日志检索与 CSV 导出（技术 十一）
 export default function AuditLogs() {
+  const [searchParams] = useSearchParams()
   const [items, setItems] = useState<AuditLogItem[]>([])
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
-  const [filters, setFilters] = useState<{ action?: string; key_id?: string }>({})
+  const [filters, setFilters] = useState<{ action?: string; key_id?: string }>(() => ({
+    key_id: searchParams.get('key_id') ?? undefined,
+  }))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -50,6 +54,7 @@ export default function AuditLogs() {
           placeholder="key_id"
           style={{ width: 200 }}
           allowClear
+          defaultValue={searchParams.get('key_id') ?? undefined}
           onSearch={(v) => setFilters((f) => ({ ...f, key_id: v || undefined }))}
         />
       </Space>
