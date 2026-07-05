@@ -98,12 +98,13 @@ export default function KnowledgeList() {
               items: [
                 { key: 'form', label: '表单创建' },
                 { key: 'import', label: '上传 Markdown' },
-                { key: 'feishu', label: '注册飞书文档（P2）', disabled: true },
+                { key: 'feishu', label: '注册飞书文档' },
               ],
               onClick: ({ key }) => {
                 const qs = domain ? `?domain=${encodeURIComponent(domain)}` : ''
                 if (key === 'form') navigate(`/knowledge/new${qs}`)
                 if (key === 'import') navigate(`/knowledge/import${qs}`)
+                if (key === 'feishu') navigate(`/source-docs/feishu/new${qs}`)
               },
             }}
           >

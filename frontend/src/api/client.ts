@@ -141,6 +141,8 @@ export interface SourceDocItem {
   index_indexing: number
   index_failed: number
   updated_at: string
+  sync_status?: FeishuSyncStatus | null
+  feishu_url?: string | null
 }
 
 export interface SourceDocEntry {
@@ -386,4 +388,234 @@ export interface AuditLogItem {
   kid: string | null
   version: number | null
   latency_ms: number
+}
+
+// ---- 飞书同步（P2，对接 feishu_sync API） ----
+
+export type FeishuSyncStatus =
+  | 'pending'
+  | 'syncing'
+  | 'success'
+  | 'failed'
+  | 'awaiting_auth'
+  | 'permission_revoked'
+  | 'auth_timeout'
+  | 'archived'
+
+export const SYNC_STATUS_LABEL: Record<FeishuSyncStatus, string> = {
+  pending: '待同步',
+  syncing: '同步中',
+  success: '已同步',
+  failed: '同步失败',
+  awaiting_auth: '待授权',
+  permission_revoked: '权限已撤销',
+  auth_timeout: '授权超时',
+  archived: '已归档',
+}
+
+export const SYNC_STATUS_COLOR: Record<FeishuSyncStatus, string> = {
+  pending: 'default',
+  syncing: 'processing',
+  success: 'green',
+  failed: 'red',
+  awaiting_auth: 'gold',
+  permission_revoked: 'red',
+  auth_timeout: 'orange',
+  archived: 'default',
+}
+
+/** 轮询中的非终态 */
+export const FEISHU_SYNC_POLLING: FeishuSyncStatus[] = ['pending', 'syncing']
+
+export interface FeishuPermissionCheck {
+  ok: boolean
+  error_code?: string
+  error_message?: string
+  action_guide?: string
+}
+
+export interface FeishuResolveResult {
+  resolved: boolean
+  feishu_doc_type: string
+  feishu_doc_token: string
+  feishu_url: string
+  title: string
+  permission_check: FeishuPermissionCheck
+}
+
+export interface FeishuPhase1Result {
+  source_doc_id: number
+  import_batch_id: number
+  parsed_items: number
+  blocking_count: number
+  skipped_blocks: number
+  ok: boolean
+}
+
+export interface FeishuCreateResult {
+  id: number
+  name: string
+  source: string
+  phase1?: FeishuPhase1Result
+  sync_status?: FeishuSyncStatus
+  permission_check?: FeishuPermissionCheck
+  errors?: ValidationFinding[]
+}
+
+export interface FeishuSyncDuplicateInfo {
+  kid: string
+  title?: string | null
+  status?: string | null
+  source_doc_id?: number | null
+  source_doc_name?: string | null
+}
+
+export interface FeishuSyncFailureItem {
+  seq: number
+  reason: string
+  reason_label?: string
+  title?: string | null
+  align_action?: string | null
+  duplicate?: FeishuSyncDuplicateInfo
+  validation?: ValidationFinding[]
+  kid?: string | null
+  detail?: string | null
+}
+
+export interface FeishuSyncErrorDetail {
+  code: string
+  message: string
+  breakdown?: Record<string, number>
+  failures?: FeishuSyncFailureItem[]
+}
+
+export interface FeishuSyncStatusOut {
+  sync_status: FeishuSyncStatus | null
+  technical_status: string | null
+  last_sync_at: string | null
+  last_sync_error: string | null
+  last_sync_error_detail: FeishuSyncErrorDetail | null
+  feishu_url: string | null
+  feishu_doc_token: string | null
+  feishu_doc_type: string | null
+  feishu_title: string | null
+  content_hash: string | null
+  source_doc_status: string | null
+  archived_at: string | null
+  awaiting_auth_since: string | null
+  sync_interval_sec: number | null
+}
+
+export interface FeishuSyncHistoryItem {
+  import_batch_id: number
+  status: string
+  created_by: string
+  created_at: string
+}
+
+export interface FeishuSyncHistory {
+  source_doc_id: number
+  items: FeishuSyncHistoryItem[]
+  current: FeishuSyncStatusOut
+}
+
+export async function resolveFeishuDoc(feishuUrl: string): Promise<FeishuResolveResult> {
+  const resp = await api.post<FeishuResolveResult>('/api/source-docs/resolve', { feishu_url: feishuUrl })
+  return resp.data
+}
+
+export async function createFeishuSourceDoc(body: {
+  domain: string
+  type: string
+  name: string
+  feishu_url: string
+}) {
+  return api.post<FeishuCreateResult>('/api/source-docs', body)
+}
+
+export async function fetchFeishuSyncStatus(docId: number): Promise<FeishuSyncStatusOut> {
+  const resp = await api.get<FeishuSyncStatusOut>(`/api/source-docs/${docId}/sync-status`)
+  return resp.data
+}
+
+export async function fetchFeishuSyncHistory(docId: number): Promise<FeishuSyncHistory> {
+  const resp = await api.get<FeishuSyncHistory>(`/api/source-docs/${docId}/sync-history`)
+  return resp.data
+}
+
+export async function triggerFeishuSync(docId: number) {
+  return api.post(`/api/source-docs/${docId}/sync`)
+}
+
+// ---- 审核待办（P2） ----
+
+export type ReviewTaskType = 'risk' | 'manual_fill' | 'conflict'
+export type ReviewTaskStatus = 'pending' | 'approved' | 'rejected' | 'expired'
+
+export const REVIEW_TASK_TYPE_LABEL: Record<ReviewTaskType, string> = {
+  risk: '风险审核',
+  manual_fill: '人工补齐',
+  conflict: '冲突处理',
+}
+
+export const REVIEW_TASK_STATUS_LABEL: Record<ReviewTaskStatus, string> = {
+  pending: '待处理',
+  approved: '已通过',
+  rejected: '已驳回',
+  expired: '已过期',
+}
+
+export interface ReviewTaskKnowledgeSummary {
+  title: string
+  status: string
+  type: string
+  risk_note: string | null
+}
+
+export interface ReviewTaskItem {
+  id: number
+  kid: string
+  domain: string
+  task_type: ReviewTaskType
+  status: ReviewTaskStatus
+  risk_note: string | null
+  submitter_id: string
+  submitter_name: string | null
+  reviewer_id: string | null
+  reject_reason: string | null
+  created_at: string
+  knowledge: ReviewTaskKnowledgeSummary | null
+}
+
+export interface ReviewTaskListOut {
+  items: ReviewTaskItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export async function fetchReviewTasks(params: {
+  domain?: string
+  task_type?: ReviewTaskType
+  status?: ReviewTaskStatus
+  page?: number
+  page_size?: number
+}): Promise<ReviewTaskListOut> {
+  const resp = await api.get<ReviewTaskListOut>('/api/review-tasks', { params })
+  return resp.data
+}
+
+export async function approveReviewTask(id: number) {
+  return api.post(`/api/review-tasks/${id}/approve`)
+}
+
+export async function rejectReviewTask(id: number, reason: string) {
+  return api.post(`/api/review-tasks/${id}/reject`, { reason })
+}
+
+export async function patchKnowledgeMeta(
+  kid: string,
+  body: { tags?: string[]; owner?: string; expire_date?: string },
+) {
+  return api.patch(`/api/knowledge/${kid}/meta`, body)
 }

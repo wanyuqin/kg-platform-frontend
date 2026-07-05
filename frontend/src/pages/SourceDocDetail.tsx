@@ -7,14 +7,17 @@ import { useNavigate, useParams } from 'react-router-dom'
 import MarkdownEditor from '../components/MarkdownEditor'
 import MarkdownPreview from '../components/MarkdownPreview'
 import KnowledgeEntryTable from '../components/KnowledgeEntryTable'
+import FeishuSyncPanel from '../components/FeishuSyncPanel'
 import {
   api,
   ALIGN_LABEL,
   domainDisplayLabel,
   DomainItem,
+  FeishuSyncHistory,
   SOURCE_LABEL,
   SourceDocDetailOut,
   TYPE_COLOR,
+  fetchFeishuSyncHistory,
 } from '../api/client'
 
 // 知识文件详情（spec §4.2/§4.3）：条目视图 / 全文视图（可在线编辑）/ 变更历史
@@ -28,18 +31,27 @@ export default function SourceDocDetail() {
   const [draft, setDraft] = useState('')
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState('')
+  const [syncHistory, setSyncHistory] = useState<FeishuSyncHistory | null>(null)
 
   const load = useCallback(() => {
     api.get(`/api/source-docs/${id}`).then((r) => setDoc(r.data))
     api.get(`/api/source-docs/${id}/content`).then((r) => setMarkdown(r.data.markdown))
   }, [id])
+  const loadSyncHistory = useCallback(() => {
+    if (!id) return
+    fetchFeishuSyncHistory(Number(id)).then(setSyncHistory).catch(() => setSyncHistory(null))
+  }, [id])
   useEffect(() => {
     api.get('/api/domains/mine').then((resp) => setDomains(resp.data.items))
     load()
   }, [load])
+  useEffect(() => {
+    if (doc?.source === 'feishu') loadSyncHistory()
+  }, [doc?.source, loadSyncHistory])
 
   if (!doc) return null
   const active = doc.status === 'active'
+  const isFeishu = doc.source === 'feishu'
 
   const submitEdit = async () => {
     const data = new FormData()
@@ -91,7 +103,9 @@ export default function SourceDocDetail() {
       extra={
         active && (
           <Space>
-            <Button onClick={() => navigate(`/knowledge/import?docId=${id}`)}>编辑更新</Button>
+            {!isFeishu && (
+              <Button onClick={() => navigate(`/knowledge/import?docId=${id}`)}>编辑更新</Button>
+            )}
             <Button
               onClick={async () => {
                 const r = await api.post(`/api/source-docs/${id}/renew`, {})
@@ -119,6 +133,10 @@ export default function SourceDocDetail() {
         <Descriptions.Item label="条目">{doc.entry_published}/{doc.entry_total}</Descriptions.Item>
         <Descriptions.Item label="最近更新">{doc.updated_at.slice(0, 19).replace('T', ' ')}</Descriptions.Item>
       </Descriptions>
+
+      {isFeishu && (
+        <FeishuSyncPanel docId={Number(id)} initialSyncStatus={syncHistory?.current.sync_status ?? undefined} />
+      )}
 
       <Tabs
         items={[
@@ -150,7 +168,7 @@ export default function SourceDocDetail() {
               </>
             ) : (
               <>
-                {active && (
+                {active && !isFeishu && (
                   <Space style={{ marginBottom: 12 }}>
                     <Button onClick={() => { setDraft(markdown); setEditing(true) }}>编辑全文</Button>
                     <Button onClick={() => { navigator.clipboard.writeText(markdown); message.success('已复制') }}>
@@ -174,7 +192,12 @@ export default function SourceDocDetail() {
                 columns={[
                   { title: '时间', dataIndex: 'created_at', render: (v) => v.slice(0, 19).replace('T', ' ') },
                   { title: '操作人', dataIndex: 'created_by' },
-                  { title: '方式', dataIndex: 'origin', render: (o) => (o === 'manual' ? '在线编辑' : '上传') },
+                  {
+                    title: '方式',
+                    dataIndex: 'origin',
+                    render: (o: string) =>
+                      ({ manual: '在线编辑', upload: '上传', feishu: '飞书同步' } as Record<string, string>)[o] ?? o,
+                  },
                   {
                     title: '变化',
                     dataIndex: 'stats',
@@ -185,6 +208,31 @@ export default function SourceDocDetail() {
               />
             ),
           },
+          ...(isFeishu
+            ? [
+                {
+                  key: 'sync-history',
+                  label: `同步历史（${syncHistory?.items.length ?? 0}）`,
+                  children: (
+                    <Table
+                      rowKey="import_batch_id"
+                      size="small"
+                      pagination={false}
+                      dataSource={syncHistory?.items ?? []}
+                      columns={[
+                        {
+                          title: '时间',
+                          dataIndex: 'created_at',
+                          render: (v: string) => v.slice(0, 19).replace('T', ' '),
+                        },
+                        { title: '操作人', dataIndex: 'created_by' },
+                        { title: '批次状态', dataIndex: 'status' },
+                      ]}
+                    />
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
     </Card>

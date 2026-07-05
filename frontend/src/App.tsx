@@ -3,6 +3,9 @@ import {
   DatabaseOutlined,
   KeyOutlined,
   LogoutOutlined,
+  FileTextOutlined,
+  CheckSquareOutlined,
+  TagsOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
@@ -24,12 +27,22 @@ import KnowledgeList from './pages/KnowledgeList'
 import Login from './pages/Login'
 import SourceDocDetail from './pages/SourceDocDetail'
 import SourceDocList from './pages/SourceDocList'
+import FeishuBind from './pages/FeishuBind'
+import ReviewQueue from './pages/ReviewQueue'
+import GovernanceTagging from './pages/GovernanceTagging'
 
 const { Sider, Header, Content } = Layout
 
-// P1 控制台页面：主流程为 domain → 知识文件 → 知识条目
+// P1/P2 控制台页面：主流程为 domain → 知识文件 → 知识条目
+const MEMBER_MENU = [
+  { key: '/knowledge', icon: <FileTextOutlined />, label: '知识条目' },
+  { key: '/source-docs', icon: <DatabaseOutlined />, label: '知识文件' },
+  { key: '/review-tasks', icon: <CheckSquareOutlined />, label: '审核待办' },
+]
+
 const BASE_MENU = [
   { key: '/domains', icon: <DatabaseOutlined />, label: '知识域' },
+  { key: '/review-tasks', icon: <CheckSquareOutlined />, label: '审核待办' },
   { key: '/audit-logs', icon: <AuditOutlined />, label: '审计查询' },
 ]
 
@@ -40,6 +53,7 @@ const ADMIN_MENU = {
   children: [
     { key: '/admin/users', label: '用户管理' },
     { key: '/admin/keys', icon: <KeyOutlined />, label: 'API Key' },
+    { key: '/governance/tagging', icon: <TagsOutlined />, label: '打标' },
   ],
 }
 
@@ -66,16 +80,22 @@ function ConsoleLayout() {
   const location = useLocation()
   const { user, logout } = useAuth()
   const menu = useMemo(
-    () => (user?.is_platform_admin ? [...BASE_MENU, ADMIN_MENU] : []),
+    () => (user?.is_platform_admin ? [...BASE_MENU, ADMIN_MENU] : MEMBER_MENU),
     [user?.is_platform_admin],
   )
   const homePath = user?.is_platform_admin ? '/domains' : '/knowledge'
   const selected = useMemo(() => {
     if (location.pathname.startsWith('/admin/users')) return '/admin/users'
     if (location.pathname.startsWith('/admin/keys')) return '/admin/keys'
-    return menu.find((m) => 'key' in m && location.pathname.startsWith(m.key as string))?.key ?? '/knowledge'
-  }, [location.pathname, menu])
-  const openKeys = location.pathname.startsWith('/admin') ? ['admin'] : undefined
+    if (location.pathname.startsWith('/governance/tagging')) return '/governance/tagging'
+    if (location.pathname.startsWith('/review-tasks')) return '/review-tasks'
+    if (location.pathname.startsWith('/source-docs')) return '/source-docs'
+    if (location.pathname.startsWith('/knowledge')) return '/knowledge'
+    return menu.find((m) => 'key' in m && location.pathname.startsWith(m.key as string))?.key ?? homePath
+  }, [location.pathname, menu, homePath])
+  const openKeys = location.pathname.startsWith('/admin') || location.pathname.startsWith('/governance')
+    ? ['admin']
+    : undefined
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -119,11 +139,14 @@ function ConsoleLayout() {
             <Route path="/knowledge/new" element={<KnowledgeForm />} />
             <Route path="/knowledge/import" element={<ImportPreview />} />
             <Route path="/source-docs" element={<SourceDocList />} />
+            <Route path="/source-docs/feishu/new" element={<FeishuBind />} />
             <Route path="/source-docs/:id" element={<SourceDocDetail />} />
+            <Route path="/review-tasks" element={<ReviewQueue />} />
             <Route path="/knowledge/:kid" element={<KnowledgeDetail />} />
             <Route path="/domains" element={<AdminRoute><DomainList /></AdminRoute>} />
             <Route path="/domains/:code" element={<AdminRoute><DomainConfig /></AdminRoute>} />
             <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
+            <Route path="/governance/tagging" element={<AdminRoute><GovernanceTagging /></AdminRoute>} />
             <Route path="/admin/users" element={<AdminRoute><AdminUsers /></AdminRoute>} />
             <Route path="/admin/keys" element={<AdminRoute><AdminKeys /></AdminRoute>} />
           </Routes>

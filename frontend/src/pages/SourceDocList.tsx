@@ -2,7 +2,18 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Input, Popconfirm, Progress, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
-import { api, domainSelectOption, DomainItem, SOURCE_LABEL, SourceDocItem, TYPE_COLOR } from '../api/client'
+import {
+  api,
+  domainSelectOption,
+  DomainItem,
+  SOURCE_LABEL,
+  SourceDocItem,
+  SYNC_STATUS_COLOR,
+  SYNC_STATUS_LABEL,
+  FeishuSyncStatus,
+  TYPE_COLOR,
+  triggerFeishuSync,
+} from '../api/client'
 
 function IndexProgressCell({ r }: { r: SourceDocItem }) {
   const { entry_published, index_ready, index_indexing, index_failed } = r
@@ -89,6 +100,12 @@ export default function SourceDocList() {
     load()
   }
 
+  const syncFeishu = async (id: number) => {
+    await triggerFeishuSync(id)
+    message.success('已触发飞书同步')
+    load()
+  }
+
   return (
     <Card
       title={
@@ -125,6 +142,15 @@ export default function SourceDocList() {
             }
           >
             上传
+          </Button>
+          <Button
+            onClick={() =>
+              navigate(
+                `/source-docs/feishu/new${domain ? `?domain=${encodeURIComponent(domain)}` : ''}`,
+              )
+            }
+          >
+            注册飞书文档
           </Button>
         </Space>
       }
@@ -172,6 +198,17 @@ export default function SourceDocList() {
           },
           { title: '来源', dataIndex: 'source', render: (s) => SOURCE_LABEL[s] ?? s },
           {
+            title: '同步状态',
+            render: (_, r) =>
+              r.source === 'feishu' && r.sync_status ? (
+                <Tag color={SYNC_STATUS_COLOR[r.sync_status as FeishuSyncStatus]}>
+                  {SYNC_STATUS_LABEL[r.sync_status as FeishuSyncStatus]}
+                </Tag>
+              ) : (
+                <Typography.Text type="secondary">—</Typography.Text>
+              ),
+          },
+          {
             title: '条目数（在架/总）',
             render: (_, r) => `${r.entry_published}/${r.entry_total}`,
           },
@@ -192,9 +229,14 @@ export default function SourceDocList() {
               <Space>
                 <a onClick={() => goEntries(r)}>条目</a>
                 <a onClick={() => navigate(`/source-docs/${r.id}`)}>详情</a>
+                {r.source === 'feishu' && r.status === 'active' && (
+                  <a onClick={() => void syncFeishu(r.id)}>立即同步</a>
+                )}
+                {r.status === 'active' && r.source !== 'feishu' && (
+                  <a onClick={() => navigate(`/knowledge/import?docId=${r.id}`)}>更新</a>
+                )}
                 {r.status === 'active' && (
                   <>
-                    <a onClick={() => navigate(`/knowledge/import?docId=${r.id}`)}>更新</a>
                     <a onClick={() => renew(r.id)}>整体续期</a>
                     <Popconfirm
                       title={`将下架该文件全部 ${r.entry_published} 条在架条目并归档，确认？`}
