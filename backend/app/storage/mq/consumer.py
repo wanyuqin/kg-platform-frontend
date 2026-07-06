@@ -13,7 +13,12 @@ from app.config import Settings, get_settings
 from app.feishu.client import FeishuClient
 from app.feishu.exceptions import FeishuPermissionError
 from app.feishu.auth_state import apply_permission_failure
-from app.feishu.sync import FeishuSyncError, mark_sync_technical_error, sync_feishu_doc
+from app.feishu.sync import (
+    NON_RETRYABLE_SYNC_ERRORS,
+    FeishuSyncError,
+    mark_sync_technical_error,
+    sync_feishu_doc,
+)
 from app.storage.mq.backend import MqBackend, get_mq_backend
 from app.storage.mq.message import FeishuEventMessage
 from app.storage.mq.producer import FeishuEventProducer
@@ -105,6 +110,13 @@ class FeishuEventConsumer:
             except FeishuSyncError as exc:
                 await mark_sync_technical_error(session, message.source_doc_id, exc.code)
                 await session.commit()
+                if exc.code in NON_RETRYABLE_SYNC_ERRORS:
+                    logger.warning(
+                        "feishu sync non-retryable error doc=%s code=%s",
+                        message.source_doc_id,
+                        exc.code,
+                    )
+                    return "skip"
                 return await self._schedule_retry(message)
             except Exception:
                 logger.exception("feishu sync failed doc=%s", message.source_doc_id)
@@ -113,20 +125,25 @@ class FeishuEventConsumer:
 
     async def _schedule_retry(self, message: FeishuEventMessage) -> Literal["retry", "dlq"]:
         if message.retry_count >= MAX_RETRIES:
+            logger.error(
+                "FEISHU_DLQ_PUSH doc=%s token=%s retries=%d reason=max_retries",
+                message.source_doc_id,
+                message.feishu_doc_token,
+                message.retry_count,
+            )
             await self._producer.publish_dlq(message)
             return "dlq"
         delay = RETRY_DELAYS_SEC[min(message.retry_count, len(RETRY_DELAYS_SEC) - 1)]
         retry_msg = message.with_retry()
-        if self._settings.feishu_mq_backend == "memory" or delay == 0:
-            await self._producer.publish(retry_msg)
-            return "retry"
-        logger.warning(
-            "feishu mq retry would sleep %ds; routing to DLQ instead doc=%s",
-            delay,
-            message.source_doc_id,
-        )
-        await self._producer.publish_dlq(retry_msg)
-        return "dlq"
+        if self._settings.feishu_mq_backend != "memory" and delay > 0:
+            logger.warning(
+                "feishu mq retry delay %ds not supported on %s; republishing immediately doc=%s",
+                delay,
+                self._settings.feishu_mq_backend,
+                message.source_doc_id,
+            )
+        await self._producer.publish(retry_msg)
+        return "retry"
 
 
 async def _should_skip_message(session: AsyncSession, message: FeishuEventMessage) -> bool:

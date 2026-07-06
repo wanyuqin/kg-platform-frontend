@@ -95,6 +95,129 @@ class TestBlocksToMarkdown:
         assert "```python" in result.markdown
         assert "print('hi')" in result.markdown
 
+    def test_ordered_list_auto_sequence(self):
+        blocks = _page("o1", "o2", "o3") + [
+            {
+                "block_id": "o1",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "第一步"}}],
+                    "style": {"sequence": "1"},
+                },
+                "children": [],
+            },
+            {
+                "block_id": "o2",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "第二步"}}],
+                    "style": {"sequence": "auto"},
+                },
+                "children": [],
+            },
+            {
+                "block_id": "o3",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "第三步"}}],
+                    "style": {"sequence": "auto"},
+                },
+                "children": [],
+            },
+        ]
+        result = blocks_to_markdown(blocks)
+        assert "1. 第一步" in result.markdown
+        assert "2. 第二步" in result.markdown
+        assert "3. 第三步" in result.markdown
+        assert "auto." not in result.markdown
+
+    def test_ordered_list_continues_after_callout(self):
+        blocks = _page("o1", "ca1", "o2", "o3") + [
+            {
+                "block_id": "o1",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "第一步"}}],
+                    "style": {"sequence": "1"},
+                },
+                "children": [],
+            },
+            {
+                "block_id": "ca1",
+                "block_type": 19,
+                "callout": {"elements": [{"text_run": {"content": "提示"}}]},
+                "children": [],
+            },
+            {
+                "block_id": "o2",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "第二步"}}],
+                    "style": {"sequence": "auto"},
+                },
+                "children": [],
+            },
+            {
+                "block_id": "o3",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "第三步"}}],
+                    "style": {"sequence": "auto"},
+                },
+                "children": [],
+            },
+        ]
+        result = blocks_to_markdown(blocks)
+        assert "1. 第一步" in result.markdown
+        assert "2. 第二步" in result.markdown
+        assert "3. 第三步" in result.markdown
+
+    def test_separate_ordered_lists_reset_sequence(self):
+        blocks = _page("o1", "o2", "t1", "o3", "o4") + [
+            {
+                "block_id": "o1",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "列表甲一"}}],
+                    "style": {"sequence": "1"},
+                },
+                "children": [],
+            },
+            {
+                "block_id": "o2",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "列表甲二"}}],
+                    "style": {"sequence": "auto"},
+                },
+                "children": [],
+            },
+            _text("t1", "分隔段落"),
+            {
+                "block_id": "o3",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "列表乙一"}}],
+                    "style": {"sequence": "1"},
+                },
+                "children": [],
+            },
+            {
+                "block_id": "o4",
+                "block_type": 13,
+                "ordered": {
+                    "elements": [{"text_run": {"content": "列表乙二"}}],
+                    "style": {"sequence": "auto"},
+                },
+                "children": [],
+            },
+        ]
+        result = blocks_to_markdown(blocks)
+        assert "1. 列表甲一" in result.markdown
+        assert "2. 列表甲二" in result.markdown
+        assert "1. 列表乙一" in result.markdown
+        assert "2. 列表乙二" in result.markdown
+
     def test_bullet_list(self):
         blocks = _page("b1", "b2") + [
             {

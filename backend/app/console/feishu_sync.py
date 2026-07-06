@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,12 +31,19 @@ from app.feishu.exceptions import FeishuError, FeishuPermissionError
 from app.feishu.sync import (
     FeishuSyncError,
     Phase1Result,
+    discard_import_batch,
     record_sync_receipt,
     sync_feishu_doc_phase1,
     sync_feishu_doc_phase2,
 )
 from app.storage.oss.client import OssClient
-from app.storage.pg.models import ConsoleUser, ImportBatch, SourceDoc, SyncState
+from app.storage.pg.models import (
+    ConsoleUser,
+    FeishuSyncReceipt,
+    ImportBatch,
+    SourceDoc,
+    SyncState,
+)
 from app.storage.pg.session import get_session, get_session_factory
 from app.storage.viking.client import VikingClient, get_viking
 
@@ -121,6 +129,31 @@ async def _load_sync_state(session: AsyncSession, doc_id: int) -> SyncState | No
     ).scalar_one_or_none()
 
 
+async def _discard_previewing_feishu_batches(session: AsyncSession, doc_id: int) -> None:
+    batch_ids = (
+        (
+            await session.execute(
+                select(ImportBatch.id).where(
+                    ImportBatch.source_doc_id == doc_id,
+                    ImportBatch.origin == "feishu",
+                    ImportBatch.status == "previewing",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for batch_id in batch_ids:
+        await discard_import_batch(session, batch_id)
+
+
+async def _acquire_doc_lock(session: AsyncSession, source_doc_id: int) -> None:
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": source_doc_id},
+    )
+
+
 def _permission_from_error(exc: FeishuPermissionError) -> dict:
     return _permission_out(
         PermissionCheck(
@@ -158,6 +191,19 @@ async def run_phase2_job(
             await record_sync_receipt(session, source_doc_id, phase1.content_hash, "bind")
             await session.commit()
             logger.info("feishu phase2 background committed doc=%s", source_doc_id)
+        except FeishuSyncError as exc:
+            if exc.code in {"no_sync_state", "invalid_source", "not_found", "archived"}:
+                await discard_import_batch(session, phase1.import_batch_id)
+                await session.commit()
+                logger.warning(
+                    "feishu phase2 aborted doc=%s batch=%s reason=%s",
+                    source_doc_id,
+                    phase1.import_batch_id,
+                    exc.code,
+                )
+                return
+            logger.exception("feishu phase2 background failed doc=%s", source_doc_id)
+            await session.rollback()
         except Exception:
             logger.exception("feishu phase2 background failed doc=%s", source_doc_id)
             await session.rollback()
@@ -290,6 +336,9 @@ async def create_feishu_source_doc(
                 "next": "fix permission then retry",
             },
         )
+    except FeishuSyncError as exc:
+        await session.rollback()
+        raise errors.invalid_argument(exc.args[0]) from exc
 
     if not phase1.ok:
         await session.commit()
@@ -376,6 +425,50 @@ async def trigger_feishu_sync(
         "phase1": _phase1_out(phase1),
         "sync_status": "syncing",
         "next": "phase2 running",
+    }
+
+
+@router.post("/source-docs/{doc_id}/unbind-feishu")
+async def unbind_feishu_source_doc(
+    doc_id: int,
+    user: ConsoleUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """运营解绑飞书：保留本地条目，转为 manual 来源（feishu-sync §13.3 D8）。"""
+    doc = await load_doc(session, user, doc_id)
+    if doc.source != "feishu":
+        raise errors.invalid_argument("仅飞书来源文档可解绑")
+
+    await _acquire_doc_lock(session, doc_id)
+    await session.refresh(doc)
+    if doc.sync_status == "syncing":
+        raise errors.conflict("文档正在同步中，请稍后再解绑")
+
+    sync = await _load_sync_state(session, doc_id)
+    if sync is not None:
+        await session.delete(sync)
+    await session.execute(
+        delete(FeishuSyncReceipt).where(FeishuSyncReceipt.source_doc_id == doc_id)
+    )
+    await _discard_previewing_feishu_batches(session, doc_id)
+
+    doc.source = "manual"
+    doc.feishu_doc_token = None
+    doc.feishu_doc_type = None
+    doc.feishu_url = None
+    doc.sync_status = "pending"
+    doc.last_sync_at = None
+    doc.last_sync_error = None
+    doc.last_sync_error_detail = None
+    doc.sync_interval_sec = None
+    doc.awaiting_auth_since = None
+    doc.updated_at = datetime.now(UTC)
+
+    await session.commit()
+    return {
+        "id": doc.id,
+        "name": doc.name,
+        "source": doc.source,
     }
 
 

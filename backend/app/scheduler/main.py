@@ -97,9 +97,13 @@ async def poll_feishu_auth() -> None:
     logger.info("scheduler job start: poll_feishu_auth")
     try:
         async with get_session_factory()() as session:
-            n = await feishu_auth_poll.feishu_auth_poll_tick(session)
+            timed_out, recovered = await feishu_auth_poll.feishu_auth_poll_tick(session)
             await session.commit()
-        logger.info("scheduler job done: poll_feishu_auth recovered=%d", n)
+        logger.info(
+            "scheduler job done: poll_feishu_auth timed_out=%d recovered=%d",
+            timed_out,
+            recovered,
+        )
     except Exception:
         logger.exception("scheduler job failed: poll_feishu_auth")
         raise

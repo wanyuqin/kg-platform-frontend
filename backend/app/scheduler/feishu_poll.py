@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -65,7 +65,17 @@ async def feishu_poll_tick(
         await session.execute(
             select(SourceDoc, SyncState)
             .join(SyncState, SyncState.source_doc_id == SourceDoc.id)
-            .where(SourceDoc.source == "feishu", SourceDoc.status == "active")
+            .where(
+                SourceDoc.source == "feishu",
+                SourceDoc.status == "active",
+                SourceDoc.sync_status.notin_(
+                    tuple(AUTH_WAIT_STATUSES | {"auth_timeout", "syncing"})
+                ),
+                SyncState.sync_status.notin_(("syncing", "quarantine")),
+                or_(SyncState.next_poll_at.is_(None), SyncState.next_poll_at <= now),
+            )
+            .order_by(SyncState.next_poll_at.nulls_first())
+            .limit(50)
         )
     ).all()
 
@@ -74,7 +84,6 @@ async def feishu_poll_tick(
         doc_interval = doc.sync_interval_sec or interval
         if not should_poll(doc, sync, now=now, interval_sec=doc_interval):
             continue
-        sync.last_poll_at = now
         sync.next_poll_at = now + timedelta(seconds=doc_interval)
         try:
             await sync_feishu_doc(
@@ -86,6 +95,7 @@ async def feishu_poll_tick(
                 triggered_by="poll",
                 run_phase2=True,
             )
+            sync.last_poll_at = now
             started += 1
         except Exception:
             logger.exception("feishu poll sync failed doc=%s", doc.id)

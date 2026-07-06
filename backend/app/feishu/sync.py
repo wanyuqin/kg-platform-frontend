@@ -16,7 +16,7 @@ from app.feishu.client import FeishuClient
 from app.feishu.doc_resolver import check_permission, resolve_doc
 from app.feishu.docx_to_markdown import blocks_to_markdown
 from app.feishu.auth_state import apply_permission_failure, clear_auth_wait
-from app.feishu.exceptions import FeishuPermissionError
+from app.feishu.exceptions import FeishuError, FeishuPermissionError
 from app.feishu.media import resolve_media_in_markdown
 from app.feishu.card import send_review_card
 from app.feishu.risk_matrix import (
@@ -164,6 +164,13 @@ def _log_phase2_item_failure(
     )
 
 
+async def discard_import_batch(session: AsyncSession, batch_id: int) -> None:
+    """放弃 previewing 批次（phase2 无法继续时清理孤儿 batch）。"""
+    batch = await session.get(ImportBatch, batch_id)
+    if batch is not None and batch.status == "previewing":
+        batch.status = "discarded"
+
+
 async def mark_sync_technical_error(
     session: AsyncSession, source_doc_id: int, code: str, *, technical_status: str = "error"
 ) -> None:
@@ -224,6 +231,19 @@ class FeishuSyncError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+# 不可重试的业务错误（MQ consumer 直接 skip，不走退避）
+NON_RETRYABLE_SYNC_ERRORS = frozenset(
+    {
+        "invalid_feishu_url",
+        "invalid_source",
+        "not_found",
+        "no_sync_state",
+        "archived",
+        "missing_url",
+    }
+)
 
 
 @dataclass
@@ -325,7 +345,30 @@ async def sync_feishu_doc_phase1(
     if not sync.feishu_url:
         raise FeishuSyncError("missing_url", "sync_state 缺少 feishu_url")
 
-    perm = await check_permission(client, sync.feishu_doc_token)
+    try:
+        resolved = await resolve_doc(client, sync.feishu_url)
+    except FeishuPermissionError as exc:
+        apply_permission_failure(doc, sync, exc.platform_code or "feishu_api_error", now=now)
+        await session.flush()
+        raise
+    except FeishuError as exc:
+        sync.sync_status = "error"
+        sync.last_error = "invalid_feishu_url"
+        sync.last_error_detail = {"message": str(exc)}
+        mirror_business_status(doc, sync)
+        await session.flush()
+        raise FeishuSyncError("invalid_feishu_url", str(exc)) from exc
+
+    doc_token = resolved.document_token
+    sync.feishu_doc_token = doc_token
+    doc.feishu_doc_token = doc_token
+    sync.feishu_doc_type = resolved.obj_type
+    doc.feishu_doc_type = resolved.obj_type
+    if resolved.title:
+        doc.source_title = resolved.title
+        sync.feishu_title = resolved.title
+
+    perm = await check_permission(client, doc_token)
     if not perm.ok:
         apply_permission_failure(doc, sync, perm.error_code or "feishu_api_error", now=now)
         await session.flush()
@@ -337,12 +380,7 @@ async def sync_feishu_doc_phase1(
 
     clear_auth_wait(doc)
 
-    resolved = await resolve_doc(client, sync.feishu_url)
-    if resolved.title:
-        doc.source_title = resolved.title
-        sync.feishu_title = resolved.title
-
-    blocks = await client.get_document_blocks(sync.feishu_doc_token)
+    blocks = await client.get_document_blocks(doc_token)
     rendered = blocks_to_markdown(blocks)
     sync.last_block_ids = [b.get("block_id") for b in blocks if b.get("block_id")]
     markdown = await resolve_media_in_markdown(
@@ -350,7 +388,7 @@ async def sync_feishu_doc_phase1(
         rendered.pending_media,
         client=client,
         oss=oss,
-        feishu_doc_token=sync.feishu_doc_token,
+        feishu_doc_token=doc_token,
     )
 
     batch = ImportBatch(

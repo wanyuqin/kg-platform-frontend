@@ -79,6 +79,7 @@ class _RenderCtx:
     skipped_blocks: list[str]
     pending_media: list[PendingMedia]
     h1_seq: int = 0
+    ordered_seq: int = 0  # 飞书有序列表 continuation 项 sequence="auto" 时递增
 
 
 def blocks_to_markdown(blocks: list[dict]) -> MarkdownWithMap:
@@ -242,7 +243,16 @@ def _render_list_item(
     text = _elements_to_md(body_field)
 
     if ordered:
-        seq = (body_field or {}).get("style", {}).get("sequence") or 1
+        raw_seq = (body_field or {}).get("style", {}).get("sequence")
+        if raw_seq == "auto":
+            ctx.ordered_seq += 1
+            seq = ctx.ordered_seq
+        else:
+            try:
+                seq = int(raw_seq) if raw_seq is not None else 1
+            except (TypeError, ValueError):
+                seq = 1
+            ctx.ordered_seq = seq
         marker = f"{seq}. "
     else:
         marker = "- "

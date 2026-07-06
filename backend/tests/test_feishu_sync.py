@@ -9,7 +9,13 @@ from sqlalchemy import select
 from app.domain.state_machine import Status
 from app.feishu.client import FeishuClient
 from app.feishu.exceptions import FeishuPermissionError
-from app.feishu.sync import sync_feishu_doc, sync_feishu_doc_phase1, sync_feishu_doc_phase2
+from app.feishu.sync import (
+    FeishuSyncError,
+    discard_import_batch,
+    sync_feishu_doc,
+    sync_feishu_doc_phase1,
+    sync_feishu_doc_phase2,
+)
 from app.pipeline.publish import PublishInput, publish
 from app.storage.pg.models import Domain, ImportBatch, ImportItem, Knowledge, SourceDoc, SyncState
 from tests.conftest import RecordingViking
@@ -202,6 +208,46 @@ class TestSyncPhase1:
         assert exc_info.value.platform_code == "feishu_app_not_in_kb"
         await db_session.refresh(sync)
         assert sync.sync_status == "error"
+
+    async def test_phase1_invalid_url_raises_sync_error(self, db_session):
+        doc, sync = await seed_feishu_doc(db_session)
+        sync.feishu_url = "https://example.com/not-feishu"
+        await db_session.commit()
+
+        client = FeishuClient(transport=_feishu_mock_transport())
+        with pytest.raises(FeishuSyncError, match="无法识别") as exc_info:
+            await sync_feishu_doc_phase1(
+                db_session,
+                doc.id,
+                client=client,
+                oss=FakeOss(),
+                triggered_by="manual",
+            )
+        assert exc_info.value.code == "invalid_feishu_url"
+        await db_session.commit()
+        await db_session.refresh(sync)
+        assert sync.sync_status == "error"
+        assert sync.last_error == "invalid_feishu_url"
+
+
+class TestDiscardImportBatch:
+    async def test_discard_previewing_batch(self, db_session):
+        doc, _ = await seed_feishu_doc(db_session)
+        batch = ImportBatch(
+            domain_code=doc.domain_code,
+            type=doc.type,
+            file_name=doc.name,
+            origin="feishu",
+            source_doc_id=doc.id,
+            created_by="ou_sync",
+            status="previewing",
+        )
+        db_session.add(batch)
+        await db_session.flush()
+        await discard_import_batch(db_session, batch.id)
+        await db_session.commit()
+        await db_session.refresh(batch)
+        assert batch.status == "discarded"
 
 
 class TestSyncFull:

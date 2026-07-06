@@ -142,7 +142,7 @@ class TestFeishuMqConsumer:
         assert await consumer.handle_message(msg) == "ok"
         assert calls == [doc.id]
 
-    async def test_retry_non_memory_routes_to_dlq(self, mq_session_factory, monkeypatch):
+    async def test_retry_non_memory_republishes_immediately(self, mq_session_factory, monkeypatch):
         doc, _ = await seed_feishu_doc(mq_session_factory)
         backend = get_memory_backend()
         producer = FeishuEventProducer(backend)
@@ -169,11 +169,15 @@ class TestFeishuMqConsumer:
             triggered_by="event",
             retry_count=0,
         )
-        assert await consumer.handle_message(msg) == "dlq"
-        dlq_raw = await backend.receive(settings.rocketmq_topic_feishu_event_dlq, timeout=1)
-        assert dlq_raw is not None
+        assert await consumer.handle_message(msg) == "retry"
+        retry_raw = await backend.receive(settings.rocketmq_topic_feishu_event, timeout=1)
+        assert retry_raw is not None
+        retry_msg = FeishuEventMessage.from_bytes(retry_raw)
+        assert retry_msg.retry_count == 1
+        dlq_raw = await backend.receive(settings.rocketmq_topic_feishu_event_dlq, timeout=0.05)
+        assert dlq_raw is None
 
-    async def test_retry_then_dlq(self, mq_session_factory, monkeypatch):
+    async def test_retry_then_dlq(self, mq_session_factory, monkeypatch, caplog):
         doc, _ = await seed_feishu_doc(mq_session_factory)
         backend = get_memory_backend()
         producer = FeishuEventProducer(backend)
@@ -199,7 +203,9 @@ class TestFeishuMqConsumer:
             triggered_by="event",
             retry_count=3,
         )
-        assert await consumer.handle_message(msg) == "dlq"
+        with caplog.at_level("ERROR"):
+            assert await consumer.handle_message(msg) == "dlq"
+        assert any("FEISHU_DLQ_PUSH" in record.message for record in caplog.records)
         dlq_raw = await backend.receive(settings.rocketmq_topic_feishu_event_dlq, timeout=1)
         assert dlq_raw is not None
         dlq_msg = FeishuEventMessage.from_bytes(dlq_raw)

@@ -29,6 +29,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "live: hits real Feishu OpenAPI (KG_FEISHU_LIVE=1 and KG_LARK_* required)",
+]
 
 [tool.ruff]
 line-length = 100

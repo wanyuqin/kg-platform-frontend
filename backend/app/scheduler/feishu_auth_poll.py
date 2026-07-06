@@ -73,14 +73,15 @@ async def feishu_auth_poll_tick(
     client: FeishuClient | None = None,
     oss: OssClient | None = None,
     viking: VikingClient | None = None,
-) -> int:
-    """轮询 awaiting_auth / permission_revoked 文档；权限恢复则触发同步。"""
+) -> tuple[int, int]:
+    """轮询 awaiting_auth / permission_revoked 文档；权限恢复则触发同步。
+
+    返回 (timed_out, recovered)。
+    """
     settings = settings or get_settings()
     now = now or datetime.now(UTC)
     interval = interval_sec if interval_sec is not None else settings.feishu_auth_poll_interval_sec
     timeout_hours = timeout_hours if timeout_hours is not None else settings.feishu_auth_timeout_hours
-
-    await feishu_auth_timeout_tick(session, now=now, timeout_hours=timeout_hours, settings=settings)
 
     feishu = client or FeishuClient()
     oss_client = oss or OssClient()
@@ -98,8 +99,20 @@ async def feishu_auth_poll_tick(
         )
     ).all()
 
+    timed_out = 0
+    for doc, sync in rows:
+        if not is_auth_timed_out(doc, now=now, timeout_hours=timeout_hours):
+            continue
+        mark_auth_timeout(doc, sync)
+        timed_out += 1
+        logger.info("feishu auth timeout doc=%s since=%s", doc.id, doc.awaiting_auth_since)
+    if timed_out:
+        await session.flush()
+
     recovered = 0
     for doc, sync in rows:
+        if doc.sync_status == "auth_timeout":
+            continue
         if not should_auth_poll(
             doc, sync, now=now, interval_sec=interval, timeout_hours=timeout_hours
         ):
@@ -123,4 +136,4 @@ async def feishu_auth_poll_tick(
             recovered += 1
         except Exception:
             logger.exception("feishu auth poll sync failed doc=%s", doc.id)
-    return recovered
+    return timed_out, recovered

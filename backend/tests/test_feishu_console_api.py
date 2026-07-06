@@ -8,7 +8,15 @@ from sqlalchemy import select
 from app.console import auth as console_auth
 from app.console import feishu_sync as feishu_sync_api
 from app.feishu.client import FeishuClient
-from app.storage.pg.models import ConsoleUser, Domain, DomainMember, SourceDoc, SyncState
+from app.storage.pg.models import (
+    ConsoleUser,
+    Domain,
+    DomainMember,
+    ImportBatch,
+    Knowledge,
+    SourceDoc,
+    SyncState,
+)
 from app.storage.pg.session import get_session
 from app.storage.viking.client import get_viking
 from tests.conftest import RecordingViking
@@ -74,7 +82,7 @@ async def seeded(db_session):
     await db_session.commit()
 
 
-async def _seed_feishu_doc(db_session) -> SourceDoc:
+async def _seed_feishu_doc(db_session) -> tuple[SourceDoc, SyncState]:
     doc = SourceDoc(
         name="已有飞书FAQ",
         domain_code="free-order",
@@ -102,7 +110,10 @@ async def _seed_feishu_doc(db_session) -> SourceDoc:
         )
     )
     await db_session.commit()
-    return doc
+    sync = (
+        await db_session.execute(select(SyncState).where(SyncState.source_doc_id == doc.id))
+    ).scalar_one()
+    return doc, sync
 
 
 class TestResolveFeishuDoc:
@@ -190,7 +201,7 @@ class TestCreateFeishuSourceDoc:
 class TestFeishuSyncOps:
     async def test_manual_sync(self, app_client, seeded, db_session):
         client, _ = app_client
-        doc = await _seed_feishu_doc(db_session)
+        doc, _ = await _seed_feishu_doc(db_session)
         resp = await client.post(
             f"/api/source-docs/{doc.id}/sync",
             cookies=await cookies_for("ou_member"),
@@ -203,7 +214,7 @@ class TestFeishuSyncOps:
 
     async def test_sync_status_and_history(self, app_client, seeded, db_session):
         client, _ = app_client
-        doc = await _seed_feishu_doc(db_session)
+        doc, _ = await _seed_feishu_doc(db_session)
         await client.post(
             f"/api/source-docs/{doc.id}/sync",
             cookies=await cookies_for("ou_member"),
@@ -223,6 +234,189 @@ class TestFeishuSyncOps:
         assert len(history.json()["items"]) >= 1
 
 
+class TestUnbindFeishu:
+    async def test_unbind_rejects_while_syncing(self, app_client, seeded, db_session, monkeypatch):
+        client, _ = app_client
+        monkeypatch.setattr(feishu_sync_api, "enqueue_phase2", lambda *args, **kwargs: None)
+
+        doc, _ = await _seed_feishu_doc(db_session)
+        sync_resp = await client.post(
+            f"/api/source-docs/{doc.id}/sync",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert sync_resp.status_code == 200
+
+        unbind_resp = await client.post(
+            f"/api/source-docs/{doc.id}/unbind-feishu",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert unbind_resp.status_code == 409
+
+    async def test_phase2_abandons_batch_after_unbind(self, seeded, db_session, viking, monkeypatch):
+        from app.console.feishu_sync import run_phase2_job
+
+        class _SessionCtx:
+            def __init__(self, session):
+                self._session = session
+
+            async def __aenter__(self):
+                return self._session
+
+            async def __aexit__(self, *args):
+                return None
+
+        monkeypatch.setattr(
+            feishu_sync_api,
+            "get_session_factory",
+            lambda: (lambda: _SessionCtx(db_session)),
+        )
+
+        doc, sync = await _seed_feishu_doc(db_session)
+        client = FeishuClient(transport=_feishu_mock_transport())
+        phase1 = await feishu_sync_api.sync_feishu_doc_phase1(
+            db_session,
+            doc.id,
+            client=client,
+            oss=FakeOss(),
+            triggered_by="manual",
+            actor_user_id="ou_member",
+        )
+        await db_session.commit()
+
+        await db_session.delete(sync)
+        doc.source = "manual"
+        doc.feishu_doc_token = None
+        doc.feishu_url = None
+        await db_session.commit()
+
+        await run_phase2_job(doc.id, phase1, "ou_member", viking=viking.client)
+
+        batch = await db_session.get(ImportBatch, phase1.import_batch_id)
+        assert batch is not None
+        assert batch.status == "discarded"
+
+    async def test_unbind_converts_to_manual(self, app_client, seeded, db_session):
+        client, _ = app_client
+        doc, _ = await _seed_feishu_doc(db_session)
+        resp = await client.post(
+            f"/api/source-docs/{doc.id}/unbind-feishu",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source"] == "manual"
+
+        await db_session.refresh(doc)
+        assert doc.source == "manual"
+        assert doc.feishu_doc_token is None
+        assert doc.feishu_doc_type is None
+        assert doc.feishu_url is None
+        sync = (
+            await db_session.execute(select(SyncState).where(SyncState.source_doc_id == doc.id))
+        ).scalar_one_or_none()
+        assert sync is None
+
+    async def test_unbind_discards_previewing_batch(self, app_client, seeded, db_session):
+        client, _ = app_client
+        doc, _ = await _seed_feishu_doc(db_session)
+        batch = ImportBatch(
+            domain_code=doc.domain_code,
+            type=doc.type,
+            file_name=doc.name,
+            origin="feishu",
+            source_doc_id=doc.id,
+            created_by="ou_member",
+            status="previewing",
+        )
+        db_session.add(batch)
+        doc.sync_status = "failed"
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/api/source-docs/{doc.id}/unbind-feishu",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+
+        await db_session.refresh(batch)
+        assert batch.status == "discarded"
+
+    async def test_unbind_updates_updated_at(self, app_client, seeded, db_session):
+        from datetime import UTC, datetime, timedelta
+
+        client, _ = app_client
+        doc, _ = await _seed_feishu_doc(db_session)
+        doc.updated_at = datetime.now(UTC) - timedelta(days=1)
+        await db_session.commit()
+        before = doc.updated_at
+
+        resp = await client.post(
+            f"/api/source-docs/{doc.id}/unbind-feishu",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+
+        await db_session.refresh(doc)
+        assert doc.updated_at > before
+
+    async def test_unbind_rejects_non_feishu(self, app_client, seeded, db_session):
+        client, _ = app_client
+        doc = SourceDoc(
+            name="手工文件",
+            domain_code="free-order",
+            type="faq",
+            source="manual",
+            created_by="ou_member",
+        )
+        db_session.add(doc)
+        await db_session.commit()
+        resp = await client.post(
+            f"/api/source-docs/{doc.id}/unbind-feishu",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 400
+
+    async def test_unbind_preserves_entries(self, app_client, seeded, db_session, viking):
+        client, _ = app_client
+        create = await client.post(
+            "/api/source-docs",
+            json={
+                "domain": "free-order",
+                "type": "faq",
+                "name": "解绑保留条目",
+                "feishu_url": "https://feishu.cn/docx/feishu_tok_1",
+            },
+            cookies=await cookies_for("ou_member"),
+        )
+        doc_id = create.json()["id"]
+        kids_before = (
+            (
+                await db_session.execute(
+                    select(Knowledge.kid).where(Knowledge.source_doc_id == doc_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert kids_before
+
+        resp = await client.post(
+            f"/api/source-docs/{doc_id}/unbind-feishu",
+            cookies=await cookies_for("ou_member"),
+        )
+        assert resp.status_code == 200
+        kids_after = (
+            (
+                await db_session.execute(
+                    select(Knowledge.kid).where(Knowledge.source_doc_id == doc_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert kids_after == kids_before
+
+
 class TestFeishuEventCallback:
     async def test_url_verification(self, app_client):
         client, _ = app_client
@@ -239,7 +433,7 @@ class TestFeishuEventCallback:
         from app.storage.mq.message import FeishuEventMessage
 
         reset_memory_backend()
-        doc = await _seed_feishu_doc(db_session)
+        doc, _ = await _seed_feishu_doc(db_session)
         client, _ = app_client
         resp = await client.post(
             "/api/feishu/event",
@@ -259,7 +453,7 @@ class TestFeishuEventCallback:
         assert msg.triggered_by == "event"
 
     async def test_deleted_event_archives(self, app_client, db_session, seeded):
-        doc = await _seed_feishu_doc(db_session)
+        doc, _ = await _seed_feishu_doc(db_session)
         client, _ = app_client
         resp = await client.post(
             "/api/feishu/event",
